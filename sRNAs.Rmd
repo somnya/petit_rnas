@@ -1,0 +1,683 @@
+---
+title: "sRNAs"
+author: "Eddy_Mendoza"
+date: "2023-04-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(data.table)
+library(reshape2)
+library(FactoMineR)
+library(UpSetR)
+library(DESeq2)
+library(edgeR)
+#### Visualization
+library(MetBrewer)
+```
+
+## 1 .- Exploration of the distribution of species abundance and lengths in the raw libraries
+
+```{r species abundance and lengths}
+# abundance of sRNA species
+### Select only for 21,22 and 24
+species_srna = function(path, sample_name, sex_id, tissue_id) {
+  table = data.table(read.table(path))
+  counts = as.data.frame(table[, .N, by='V2']) %>% mutate(sample = sample_name, sex = sex_id, tissue = tissue_id)
+  abundance = as.data.frame(table[, .N, by='V1']) %>% mutate(sample = sample_name, sex = sex_id, tissue = tissue_id) %>% filter(N > 2)
+  list(table, counts, abundance)
+}
+
+### FEMALE SAMPLES
+f1l=species_srna("raw/sRNA_MGX/trimmed/F1L_final_trimming.fastq_count.tsv", "F1L", "Female", "Leaf")
+f1b=species_srna("raw/sRNA_MGX/trimmed/F1B_final_trimming.fastq_count.tsv", "F1B", "Female", "Flower bud")
+
+f2l=species_srna("raw/sRNA_MGX/trimmed/F2L_final_trimming.fastq_count.tsv", "F2L", "Female", "Leaf")
+f2b=species_srna("raw/sRNA_MGX/trimmed/F2B_final_trimming.fastq_count.tsv", "F2B", "Female", "Flower bud")
+
+f3l=species_srna("raw/sRNA_MGX/trimmed/F3L_final_trimming.fastq_count.tsv", "F3L", "Female", "Leaf")
+f3b=species_srna("raw/sRNA_MGX/trimmed/F3B_final_trimming.fastq_count.tsv", "F3B", "Female", "Flower bud")
+
+### MALE SAMPLES
+
+m1l=species_srna("raw/sRNA_MGX/trimmed/M1L_final_trimming.fastq_count.tsv", "M1L", "Male", "Leaf")
+m1b=species_srna("raw/sRNA_MGX/trimmed/M1B_final_trimming.fastq_count.tsv", "M1B", "Male", "Flower bud")
+
+m2l=species_srna("raw/sRNA_MGX/trimmed/M2L_final_trimming.fastq_count.tsv", "M2L", "Male", "Leaf")
+m2b=species_srna("raw/sRNA_MGX/trimmed/M2B_final_trimming.fastq_count.tsv", "M2B", "Male", "Flower bud")
+
+m4l=species_srna("raw/sRNA_MGX/trimmed/M4L_final_trimming.fastq_count.tsv", "M4L", "Male", "Leaf")
+m4b=species_srna("raw/sRNA_MGX/trimmed/M4B_final_trimming.fastq_count.tsv", "M4B", "Male", "Flower bud")
+
+```
+
+```{r abundance densities}
+### Species abundance
+
+spp = do.call(rbind, lapply(list(f1l[[3]],
+             f1b[[3]],
+             f2l[[3]],
+             f2b[[3]],
+             f3l[[3]],
+             f3b[[3]],
+             m1l[[3]],
+             m1b[[3]],
+             m2l[[3]],
+             m2b[[3]],
+             m4l[[3]],
+             m4b[[3]]), as.data.frame
+            ) )
+
+rm(f1b, f1l, f2b, f2l, f3b, f3l, m1b, m1l, m2b, m2l, m4b, m4l)
+
+colnames(spp) = c("sRNA", "counts", "sample", "sex", "tissue")
+
+spp = spp %>% mutate(log_counts = log2(counts))
+
+#### Histogram 
+
+ggplot(spp) +
+  geom_density(aes(x=log_counts, color=sample), alpha=0.6) + 
+  facet_grid(tissue ~ sex) +
+  scale_color_manual(values = met.brewer("Hiroshige", 12)) +
+  labs(y="Density", x="log2(Expression)")
+
+ggsave("results/sp_expression.png", width = 6, height = 5, dpi = 600)
+```
+
+```{r reduced }
+### With 320880141 total reads and mincov of 1 reads per million, the min read depth is 321
+### For RPM > 1
+no_uniq = spp[spp$counts>321, ]
+ggplot(no_uniq) +
+  geom_density(aes(x=log2(counts), color=sample), alpha=0.6) + 
+  facet_grid(tissue ~ sex) +
+  scale_color_manual(values = met.brewer("Hiroshige", 12)) +
+  labs(y="Density", x="log2(Expression)")
+
+ggsave("results/reduced_sp_expression.png", width = 6, height = 5, dpi = 600)
+```
+
+
+```{r lengths}
+lgt = do.call(rbind, lapply(list(f1l[[2]],
+             f1b[[2]],
+             f2l[[2]],
+             f2b[[2]],
+             f3l[[2]],
+             f3b[[2]],
+             m1l[[2]],
+             m1b[[2]],
+             m2l[[2]],
+             m2b[[2]],
+             m4l[[2]],
+             m4b[[2]]), as.data.frame
+            ) )
+
+ggplot(lgt) +
+  geom_bar(aes(x=as.factor(V2), y=as.numeric(N), fill=sample), stat="identity", position = "dodge") +
+  facet_grid(tissue ~ sex) +
+  scale_fill_manual(values = met.brewer("Hiroshige", 12)) +
+  labs(x="sRNA Length", y="Count")
+
+ggsave("results/length.png", width = 6, height = 5, dpi = 600)
+```
+
+After the alignment and quantification with ShortStack
+
+```{r fraction of the aligned reads}
+fracs = read.table("raw/ShortStack_results/alignment_details.tsv", header = T)
+fracs = filter(fracs, mapping_type == "P", count > 0)  
+fracs = cbind(data.frame(
+  sample = rep(c(rep(1,6),rep(2,6), rep(3,6)), 2),
+  sex = c(rep("Female", 18), rep("Male", 18)),
+  organ = rep(c(rep("Flower bud", 3), rep("Leaf", 3)), 6)
+) , fracs)
+fracs = fracs %>% select(sample, sex, organ, read_length, count)
+
+ggplot(fracs) + 
+  geom_bar(aes(fill=read_length, y=count, x=sample), position="fill", stat="identity") +
+  facet_grid(organ ~ sex) +
+  scale_fill_manual(values = met.brewer("Hokusai3")) +
+  labs(y="Percentage of aligned reads", x="Individual", fill="sRNA length") +
+  theme(text = element_text(size=20))
+
+ggsave("results/fractions.png", width = 6, height = 6, dpi = 600)
+```
+
+```{r pca}
+### All together
+exp_matrix = read.table("raw/ShortStack_results/Counts.txt", header = T)
+
+transposed = t(exp_matrix[, 4:15])
+colnames(transposed) = exp_matrix$Name
+samples = data.frame(samples = rownames(transposed), 
+                     tissue = c(rep(c("Female, Flower bud", "Female, Leaf"), 3), rep(c("Male, Flower bud", "Male, Leaf"), 3)),
+                     sex = c(rep("Female", 6), rep("Male", 6)),
+                     organ = rep(c("Flower bud", "Leaf"), 6)
+                       )
+
+pca_exp = PCA(transposed, ncp = 20, graph = F)
+
+pcadf = data.frame(samples, 
+                   pca1 = as.data.frame(pca_exp$ind)[,1],
+                   pca2 = as.data.frame(pca_exp$ind)[,2],
+                   pca3 = as.data.frame(pca_exp$ind)[,3])
+
+ggplot(pcadf) +
+  geom_hline(yintercept = 0, color="gray40")+
+  geom_vline(xintercept = 0, color="gray40")+
+  geom_jitter(aes(pca1, pca2, size=pca3, fill=tissue), shape=21) +
+  labs(x="Component 1 (35.67%)", y= "Component 2 (13.39%)", size= "Component 3 (10.54%)", fill= "Tissue") +
+  scale_fill_manual(values = c("#3ab98f", "#2ab1c6", "#ee4d80", "#b52ac6")) +
+  scale_size(range = c(2,8)) +
+  guides(fill = guide_legend(override.aes = list(size=8))) +
+  coord_fixed(ratio = 1.5) +
+  theme_bw(base_size = 20)
+
+ggsave("results/pca.png", width = 10, height = 10, dpi = 600)
+```
+
+
+## 2.- Differential expression, pval<0.001
+
+```{r data prep, 21-22}
+exp_ptgs = read.table("raw/only_21-22/Counts.txt", header = T)
+# sRNA clusters names will be kept as row names, remove columns with ids
+matrix_ptgs = exp_ptgs[, 4:15]
+row.names(matrix_ptgs) = exp_ptgs$Name
+
+
+# count the number of genes expressed in none of the samples
+table(rowSums(matrix_ptgs)==0)
+
+# A good threshold can be chosen by identifying the CPM (Count Per million calculated by the EdgeR package) 
+# that corresponds to a count of 10
+cpm(10, mean(colSums(matrix_ptgs))) #value = 0.7191507
+
+# discard low counts entries for at least 2 samples
+keep = rowSums(cpm(matrix_ptgs)>0.5) >= 2	
+summary(keep) # 129 will be removed 
+matrix_ptgs = matrix_ptgs[keep,]
+
+# Prepare data info
+datainfo = samples[, 2:4]
+row.names(datainfo) = samples$samples # colnames in the expression matrix must match 
+```
+
+### Differential Expression for sex-biased/specific siRNAs (21-22nt) in Flowers
+
+```{r deseq2, flowers 21-22}
+# Select all flower samples
+flowers_ptgs = matrix_ptgs %>% select(grep('B', colnames(matrix_ptgs)))
+f_ptgs_info = datainfo[datainfo$organ == "Flower bud", ]
+
+# Check if all samples are in the info, if not then the function stops
+
+stopifnot(exprs = {
+  all(rownames(f_ptgs_info) %in% colnames(flowers_ptgs))
+  all(rownames(f_ptgs_info) == colnames(flowers_ptgs))
+})
+
+
+# generate the DESeqDataSet
+flowers_ptgs_de = DESeqDataSetFromMatrix(countData = flowers_ptgs, colData = f_ptgs_info, design = ~sex)
+
+# investigate library sizes
+colSums(counts(flowers_ptgs_de))
+
+# calculate the size factors; 
+flowers_ptgs_de = estimateSizeFactors(flowers_ptgs_de)
+flowers_ptgs_de
+flowers_ptgs_de@colData$sizeFactor
+
+# data normalization
+flowers_ptgs_rlog = rlog(flowers_ptgs_de, blind = FALSE)
+rlog.norm.counts_fptgs = assay(flowers_ptgs_rlog)
+
+# Read count correlations
+distance_fptgs = as.dist(1 - cor(rlog.norm.counts_fptgs , method = "pearson" ))
+plot(hclust(distance_fptgs), labels = colnames(rlog.norm.counts_fptgs),
+     main = "rlog  transformed  read  counts\ndistance: Pearson  correlation")
+
+# PCA, take a look at how samples group together in order to see if your comparison (male versus female) makes sense
+plotPCA(flowers_ptgs_rlog, intgroup = "sex")
+
+# MDS plot to check the relative similarities of the expression profiles between samples
+plotMDS(assay(flowers_ptgs_rlog))
+
+# We will set the female counts as the first-level-factor for the fold-change calculation:
+colData(flowers_ptgs_de)$sex = relevel(colData(flowers_ptgs_de)$sex, "Female")
+
+# Run Analysis
+fptgs_ds = DESeq(flowers_ptgs_de)
+fptgs_res = results(fptgs_ds, pAdjustMethod = "BH")
+
+# Plot estimates
+plotDispEsts(fptgs_ds)
+
+# Volcano
+ggplot() + 
+  geom_point(aes(fptgs_res$log2FoldChange, -log10(fptgs_res$pvalue), color=fptgs_res$log2FoldChange)) +
+  guides(color = FALSE) +
+  scale_color_viridis_c() +
+  labs(x="log2(Fold change)", y="-log10(p-value)") +
+  scale_x_continuous(limits=c(-15,15))
+
+# MA plot
+{
+DESeq2::plotMA(fptgs_res, alpha = 0.0001,  main = "MA plot: male vs female (padj < 0.01)", ylim = c(-10,10))
+abline(h = c(-1,1), col = "blue", lty = 2)
+mtext(c(paste("-2 fold"), paste("+ 2 fold")), side = 4, at = c(-1, 1),
+      cex = 0.8, line = 0.5, col = "blue")
+  }
+
+# Read counts of the top gene and plot
+top_fptgs = rownames(fptgs_res)[which.min(fptgs_res$padj)]
+top_fptgs
+
+# expression pattern of the gene with strongest SBGE
+plotCounts(fptgs_ds, gene = top_fptgs, intgroup="sex")
+
+# R-log transformation of the raw read counts and reorder
+fptgs_rlog = rlog(fptgs_ds, blind = FALSE)
+fptgs_res_sorted = fptgs_res[order(fptgs_res$padj), ]
+
+# identify genes with the desired adjusted p-value cutoff
+deseq = rownames(subset(fptgs_res_sorted , pvalue < 0.001))
+```
+
+```{r edgeR}
+# define groups (in the same order as the table)
+Groups = datainfo[datainfo$organ == "Flower bud", ]$sex
+
+# generate DGEList with grouping by species 
+edgeR.DGElist <- DGEList(counts = flowers_ptgs, group=Groups)
+
+# get an  impression  of the  coverage  across  samples
+hist(log2(rowSums(cpm(edgeR.DGElist))))
+
+#============== Data Normalization for library sample size ==================
+# computation of initial log counts for comparison with normalized counts
+logcounts.ini <- cpm(edgeR.DGElist,log=TRUE)
+
+# normalize for RNA composition, scaling for the effective library size
+edgeR.DGElist <- calcNormFactors(edgeR.DGElist)
+edgeR.DGElist$samples
+# Quality control: effect of the normalization step on expression distribution
+par(mfrow=c(1,2))
+boxplot(logcounts.ini, xlab="", ylab="Log2 counts per million",las=2)
+abline(h=median(logcounts.ini),col="blue")
+title("logCPMs (unnormalised)")
+boxplot(cpm(edgeR.DGElist, log=TRUE), xlab="", ylab="Log2 counts per million",las=2)
+abline(h=median(cpm(edgeR.DGElist, log=TRUE)),col="blue")
+title("logCPMs (normalised)")
+
+#============== Estimating dispersion ==================
+# To determine the differential expression in a gene-wise manner, edgeR first estimates the dispersion
+# Estimation of  dispersion
+edgeR.DGElist <- estimateCommonDisp(edgeR.DGElist, verbose=T)
+names(edgeR.DGElist)
+edgeR.DGElist <- estimateTagwiseDisp(edgeR.DGElist)
+names(edgeR.DGElist)
+plotBCV(edgeR.DGElist)
+
+# ESTIMATION OF DISPERTION by GLM
+design.mat <- model.matrix(~ Groups)
+par(mfrow=c(1,1))
+plotBCV(edgeR.DGElist)
+
+#============== Differential Expression Gene Analysis ==================
+# perform DE testing
+fit <- glmFit(edgeR.DGElist, design.mat)
+lrt <- glmLRT(fit , coef = 2)
+
+# histogram of p-values
+hist(lrt$table$PValue, col = "grey", border = "white", xlab = "", ylab = "",
+     main = "frequencies  of p-values")
+
+# extract  results
+edgeR.TopTags  <- topTags(lrt , n = Inf , # to  retrieve  all  genes
+                          sort.by = "PValue", adjust.method = "BH")
+
+summary(decideTestsDGE(lrt, p = 0.05, adjust = "BH"))
+
+# Extract most differential expressed genes
+edger = rownames(edgeR.TopTags$table[which(edgeR.TopTags$table$PValue < 0.001), ] )
+```
+
+```{r lima-voom}
+LimmaVoom.DGElist <- DGEList(counts= flowers_ptgs, group=Groups)
+
+# normalize for RNA composition, scaling for the effective library size
+LimmaVoom.DGElist <- calcNormFactors(LimmaVoom.DGElist)
+
+rownames(design.mat) <- colnames(LimmaVoom.DGElist) # add names to the design matrix from edgeR
+
+# Transform count data to log2-counts per million (logCPM), estimate the mean-variance relationship and 
+# use this to compute appropriate observational-level weights. The data are then ready for linear modelling
+voomTransformed  <- voom(LimmaVoom.DGElist , design.mat , plot=TRUE)
+
+# Quality control: effect of the voom transformation on cpm distribution
+par(mfrow=c(1,2))
+boxplot(logcounts.ini, xlab="", ylab="Log2 counts per million",las=2,main="Unnormalised logCPM")
+## Let's add a blue horizontal line that corresponds to the median logCPM
+abline(h=median(logcounts.ini),col="blue")
+boxplot(voomTransformed$E, xlab="", ylab="Log2 counts per million",las=2,main="Voom transformed logCPM")
+## Let's add a blue horizontal line that corresponds to the median logCPM
+abline(h=median(voomTransformed$E),col="blue")
+
+# fit a linear model for each gene
+voomed.fitted  <- lmFit(voomTransformed , design = design.mat)
+
+# compute  moderated t-statistics , moderated F-statistics , and log -odds of
+# differential  expression  by  empirical  Bayes  moderation  of the  standard  errors
+# towards a common  value
+voomed.fitted  <- eBayes(voomed.fitted)
+summary(decideTests(voomed.fitted, p = 0.05, adjust = "BH"))
+
+# extract most differential expressed genes
+lvoom = topTable(voomed.fitted, adjust="BH", number = Inf, sort.by="P")
+lvoom = rownames(lvoom[which(lvoom$P.Value < 0.001), ] )
+
+```
+
+
+```{r intersection}
+# Get the clusters that were diferentially expressed in at least 2 methods
+flowers_bud = unique(c(intersect(deseq, edger), intersect(deseq, lvoom), intersect(edger, lvoom)))
+
+# Heatmap
+
+cpm(flowers_ptgs[flowers_bud,])
+
+
+flowers = as.data.frame(cpm(flowers_ptgs[flowers_bud,])) %>% mutate(siRNA_cluster = factor(row.names(cpm(flowers_ptgs[flowers_bud,])), levels = row.names(cpm(flowers_ptgs[flowers_bud,]))))
+flowers = melt(flowers, variable.name = "sample", value.name = "RPM")
+
+ggplot(flowers)+
+  geom_tile(aes(x=siRNA_cluster,y=sample, fill=log(RPM))) +
+  scale_fill_viridis_c() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  coord_fixed(ratio = 0.6)
+
+
+```
+
+
+### Differential Expression for sex-biased/specific siRNAs (21-22nt) in Leaves
+
+```{r deseq2, leaves 21-22}
+# Select all flower samples
+flowers_ptgs = matrix_ptgs %>% select(grep('L', colnames(matrix_ptgs)))
+f_ptgs_info = datainfo[datainfo$organ == "Leaf", ]
+
+# Check if all samples are in the info
+
+all(rownames(f_ptgs_info) %in% colnames(flowers_ptgs))
+all(rownames(f_ptgs_info) == colnames(flowers_ptgs))
+
+# generate the DESeqDataSet
+flowers_ptgs_de = DESeqDataSetFromMatrix(countData = flowers_ptgs, colData = f_ptgs_info, design = ~sex)
+
+# investigate library sizes
+colSums(counts(flowers_ptgs_de))
+
+# calculate the size factors; 
+flowers_ptgs_de = estimateSizeFactors(flowers_ptgs_de)
+flowers_ptgs_de
+flowers_ptgs_de@colData$sizeFactor
+
+# data normalization
+flowers_ptgs_rlog = rlog(flowers_ptgs_de, blind = FALSE)
+rlog.norm.counts_fptgs = assay(flowers_ptgs_rlog)
+
+# Read count correlations
+distance_fptgs = as.dist(1 - cor(rlog.norm.counts_fptgs , method = "pearson" ))
+plot(hclust(distance_fptgs), labels = colnames(rlog.norm.counts_fptgs),
+     main = "rlog  transformed  read  counts\ndistance: Pearson  correlation")
+
+# PCA, take a look at how samples group together in order to see if your comparison (male versus female) makes sense
+plotPCA(flowers_ptgs_rlog, intgroup = "sex")
+
+# MDS plot to check the relative similarities of the expression profiles between samples
+plotMDS(assay(flowers_ptgs_rlog))
+
+# We will set the female counts as the first-level-factor for the fold-change calculation:
+colData(flowers_ptgs_de)$sex = relevel(colData(flowers_ptgs_de)$sex, "Female")
+
+# Run Analysis
+fptgs_ds = DESeq(flowers_ptgs_de)
+fptgs_res = results(fptgs_ds, pAdjustMethod = "BH")
+
+# Plot estimates
+plotDispEsts(fptgs_ds)
+
+# Volcano
+ggplot() + 
+  geom_point(aes(fptgs_res$log2FoldChange, -log10(fptgs_res$pvalue), color=fptgs_res$log2FoldChange)) +
+  guides(color = FALSE) +
+  scale_color_viridis_c() +
+  labs(x="log2(Fold change)", y="-log10(p-value)") +
+  scale_x_continuous(limits=c(-15,15))
+
+# MA plot
+{
+DESeq2::plotMA(fptgs_res, alpha = 0.0001,  main = "MA plot: male vs female (padj < 0.01)", ylim = c(-10,10))
+abline(h = c(-1,1), col = "blue", lty = 2)
+mtext(c(paste("-2 fold"), paste("+ 2 fold")), side = 4, at = c(-1, 1),
+      cex = 0.8, line = 0.5, col = "blue")
+  }
+
+# Read counts of the top gene and plot
+top_fptgs = rownames(fptgs_res)[which.min(fptgs_res$padj)]
+top_fptgs
+
+# expression pattern of the gene with strongest SBGE
+plotCounts(fptgs_ds, gene = top_fptgs, intgroup="sex")
+
+# R-log transformation of the raw read counts and reorder
+fptgs_rlog = rlog(fptgs_ds, blind = FALSE)
+fptgs_res_sorted = fptgs_res[order(fptgs_res$padj), ]
+
+# identify genes with the desired adjusted p-value cut -off
+deseq = rownames(subset(fptgs_res_sorted , padj < 0.05))
+```
+
+### Differential Expression for tissue-biased/specific siRNAs (21-22nt) in Females
+
+```{r deseq2, female leaves vs buds 21-22}
+# Select all flower samples
+flowers_ptgs = matrix_ptgs %>% select(grep('F', colnames(matrix_ptgs)))
+f_ptgs_info = datainfo[datainfo$sex == "Female", ]
+
+# Check if all samples are in the info
+
+all(rownames(f_ptgs_info) %in% colnames(flowers_ptgs))
+all(rownames(f_ptgs_info) == colnames(flowers_ptgs))
+
+# generate the DESeqDataSet
+flowers_ptgs_de = DESeqDataSetFromMatrix(countData = flowers_ptgs, colData = f_ptgs_info, design = ~organ)
+
+# investigate library sizes
+colSums(counts(flowers_ptgs_de))
+
+# calculate the size factors; 
+flowers_ptgs_de = estimateSizeFactors(flowers_ptgs_de)
+flowers_ptgs_de
+flowers_ptgs_de@colData$sizeFactor
+
+# data normalization
+flowers_ptgs_rlog = rlog(flowers_ptgs_de, blind = FALSE)
+rlog.norm.counts_fptgs = assay(flowers_ptgs_rlog)
+
+# Read count correlations
+distance_fptgs = as.dist(1 - cor(rlog.norm.counts_fptgs , method = "pearson" ))
+plot(hclust(distance_fptgs), labels = colnames(rlog.norm.counts_fptgs),
+     main = "rlog  transformed  read  counts\ndistance: Pearson  correlation")
+
+# PCA, take a look at how samples group together in order to see if your comparison (male versus female) makes sense
+plotPCA(flowers_ptgs_rlog, intgroup = "sex")
+
+# MDS plot to check the relative similarities of the expression profiles between samples
+plotMDS(assay(flowers_ptgs_rlog))
+
+# We will set the female counts as the first-level-factor for the fold-change calculation:
+colData(flowers_ptgs_de)$sex = relevel(colData(flowers_ptgs_de)$organ, "Flower bud")
+
+# Run Analysis
+fptgs_ds = DESeq(flowers_ptgs_de)
+fptgs_res = results(fptgs_ds, pAdjustMethod = "BH")
+
+# Plot estimates
+plotDispEsts(fptgs_ds)
+
+# Volcano
+ggplot() + 
+  geom_point(aes(fptgs_res$log2FoldChange, -log10(fptgs_res$pvalue), color=fptgs_res$log2FoldChange)) +
+  guides(color = FALSE) +
+  scale_color_viridis_c() +
+  labs(x="log2(Fold change)", y="-log10(p-value)") +
+  scale_x_continuous(limits=c(-15,15))
+
+# MA plot
+{
+DESeq2::plotMA(fptgs_res, alpha = 0.0001,  main = "MA plot: male vs female (padj < 0.01)", ylim = c(-10,10))
+abline(h = c(-1,1), col = "blue", lty = 2)
+mtext(c(paste("-2 fold"), paste("+ 2 fold")), side = 4, at = c(-1, 1),
+      cex = 0.8, line = 0.5, col = "blue")
+  }
+
+# Read counts of the top gene and plot
+top_fptgs = rownames(fptgs_res)[which.min(fptgs_res$padj)]
+top_fptgs
+
+# expression pattern of the gene with strongest SBGE
+plotCounts(fptgs_ds, gene = top_fptgs, intgroup="sex")
+
+# R-log transformation of the raw read counts and reorder
+fptgs_rlog = rlog(fptgs_ds, blind = FALSE)
+fptgs_res_sorted = fptgs_res[order(fptgs_res$padj), ]
+
+# identify genes with the desired adjusted p-value cut -off
+desrnas_fptgs = rownames(subset(fptgs_res_sorted , padj < 0.05))
+
+# extract normalized read counts for the 40 top DE genes into a matrix
+top50_fptgs = head(assay(fptgs_rlog)[ desrnas_fptgs, ], 50)
+top50_fptgs = as.data.frame(top50_fptgs) %>% mutate(siRNA_cluster = factor(row.names(top50_fptgs), levels = row.names(top50_fptgs)))
+female = as.vector(top50_fptgs$siRNA_cluster)
+top50_fptgs = melt(top50_fptgs, variable.name = "sample", value.name = "rlogRPM")
+top50_fptgs$sample = factor(top50_fptgs$sample, levels = c("F1B_dicer", "F2B_dicer", "F3B_dicer", "F1L_dicer", "F2L_dicer", "F3L_dicer"))
+
+# Heatmap
+ggplot(top50_fptgs)+
+  geom_tile(aes(y=siRNA_cluster,x=sample, fill=rlogRPM)) +
+  scale_fill_viridis_c() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  coord_fixed(ratio = 0.6)
+```
+
+### Differential Expression for tissue-biased/specific siRNAs (21-22nt) in Males
+
+```{r deseq2, male leaves vs buds 21-22}
+# Select all flower samples
+flowers_ptgs = matrix_ptgs %>% select(grep('M', colnames(matrix_ptgs)))
+f_ptgs_info = datainfo[datainfo$sex == "Male", ]
+
+# Check if all samples are in the info
+
+all(rownames(f_ptgs_info) %in% colnames(flowers_ptgs))
+all(rownames(f_ptgs_info) == colnames(flowers_ptgs))
+
+# generate the DESeqDataSet
+flowers_ptgs_de = DESeqDataSetFromMatrix(countData = flowers_ptgs, colData = f_ptgs_info, design = ~organ)
+
+# investigate library sizes
+colSums(counts(flowers_ptgs_de))
+
+# calculate the size factors; 
+flowers_ptgs_de = estimateSizeFactors(flowers_ptgs_de)
+flowers_ptgs_de
+flowers_ptgs_de@colData$sizeFactor
+
+# data normalization
+flowers_ptgs_rlog = rlog(flowers_ptgs_de, blind = FALSE)
+rlog.norm.counts_fptgs = assay(flowers_ptgs_rlog)
+
+# Read count correlations
+distance_fptgs = as.dist(1 - cor(rlog.norm.counts_fptgs , method = "pearson" ))
+plot(hclust(distance_fptgs), labels = colnames(rlog.norm.counts_fptgs),
+     main = "rlog  transformed  read  counts\ndistance: Pearson  correlation")
+
+# PCA, take a look at how samples group together in order to see if your comparison (male versus female) makes sense
+plotPCA(flowers_ptgs_rlog, intgroup = "sex")
+
+# MDS plot to check the relative similarities of the expression profiles between samples
+plotMDS(assay(flowers_ptgs_rlog))
+
+# We will set the female counts as the first-level-factor for the fold-change calculation:
+colData(flowers_ptgs_de)$sex = relevel(colData(flowers_ptgs_de)$organ, "Flower bud")
+
+# Run Analysis
+fptgs_ds = DESeq(flowers_ptgs_de)
+fptgs_res = results(fptgs_ds, pAdjustMethod = "BH")
+
+# Plot estimates
+plotDispEsts(fptgs_ds)
+
+# Volcano
+ggplot() + 
+  geom_point(aes(fptgs_res$log2FoldChange, -log10(fptgs_res$pvalue), color=fptgs_res$log2FoldChange)) +
+  guides(color = FALSE) +
+  scale_color_viridis_c() +
+  labs(x="log2(Fold change)", y="-log10(p-value)") +
+  scale_x_continuous(limits=c(-15,15))
+
+# MA plot
+{
+DESeq2::plotMA(fptgs_res, alpha = 0.0001,  main = "MA plot: male vs female (padj < 0.01)", ylim = c(-10,10))
+abline(h = c(-1,1), col = "blue", lty = 2)
+mtext(c(paste("-2 fold"), paste("+ 2 fold")), side = 4, at = c(-1, 1),
+      cex = 0.8, line = 0.5, col = "blue")
+  }
+
+# Read counts of the top gene and plot
+top_fptgs = rownames(fptgs_res)[which.min(fptgs_res$padj)]
+top_fptgs
+
+# expression pattern of the gene with strongest SBGE
+plotCounts(fptgs_ds, gene = top_fptgs, intgroup="sex")
+
+# R-log transformation of the raw read counts and reorder
+fptgs_rlog = rlog(fptgs_ds, blind = FALSE)
+fptgs_res_sorted = fptgs_res[order(fptgs_res$padj), ]
+
+# identify genes with the desired adjusted p-value cut -off
+desrnas_fptgs = rownames(subset(fptgs_res_sorted , padj < 0.05))
+
+# extract normalized read counts for the 40 top DE genes into a matrix
+top50_fptgs = head(assay(fptgs_rlog)[ desrnas_fptgs, ], 50)
+top50_fptgs = as.data.frame(top50_fptgs) %>% mutate(siRNA_cluster = factor(row.names(top50_fptgs), levels = row.names(top50_fptgs)))
+male = as.vector(top50_fptgs$siRNA_cluster)
+top50_fptgs = melt(top50_fptgs, variable.name = "sample", value.name = "rlogRPM")
+top50_fptgs$sample = factor(top50_fptgs$sample, levels = c("M1B_dicer", "M2B_dicer", "M4B_dicer", "M1L_dicer", "M2L_dicer", "M4L_dicer"))
+
+# Heatmap
+ggplot(top50_fptgs)+
+  geom_tile(aes(y=siRNA_cluster,x=sample, fill=rlogRPM)) +
+  scale_fill_viridis_c() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  coord_fixed(ratio = 0.6)
+```
+
+```{r upset Deseq}
+deseq_list = list("Sex-biased in flower buds" = flowers_buds, 
+                  "Sex-biased in leaves" = leaves, 
+                  "Tissue-biased in females" = female, 
+                  "Tissue-biased in males" = male)
+
+upset(fromList(deseq_list))
+```
+
