@@ -146,12 +146,16 @@ ggplot(fracs) +
 ggsave("results/fractions.png", width = 6, height = 6, dpi = 600)
 ```
 
+## 2.- Quantification analysis and differential expression
+
+#### PTGS
+
 ```{r pca}
 ### All together
-exp_matrix = read.table("raw/ShortStack_results/Counts.txt", header = T)
+exp_ptgs = read.table("raw/only_21-22_known_de_novo_f-y/Counts.txt", header = T)
 
-transposed = t(exp_matrix[, 4:15])
-colnames(transposed) = exp_matrix$Name
+transposed = t(exp_ptgs[, 4:15])
+colnames(transposed) = exp_ptgs$Name
 samples = data.frame(samples = rownames(transposed), 
                      tissue = c(rep(c("Female, Flower bud", "Female, Leaf"), 3), rep(c("Male, Flower bud", "Male, Leaf"), 3)),
                      sex = c(rep("Female", 6), rep("Male", 6)),
@@ -179,25 +183,14 @@ ggplot(pcadf) +
 ggsave("results/pca.png", width = 10, height = 10, dpi = 600)
 ```
 
-## 2.- Differential expression
-
 ```{r data prep, 21-22}
-exp_ptgs = read.table("raw/only_21-22_microRNAs/Counts.txt", header = T)
 # sRNA clusters names will be kept as row names, remove columns with ids
 matrix_ptgs = exp_ptgs[, 4:15]
 row.names(matrix_ptgs) = exp_ptgs$Name
 
-
-# count the number of genes expressed in none of the samples
-table(rowSums(matrix_ptgs)==0)
-
-# A good threshold can be chosen by identifying the CPM (Count Per million calculated by the EdgeR package) 
-# that corresponds to a count of 10
-cpm(10, mean(colSums(matrix_ptgs))) #value = 0.7191507
-
-# discard low counts entries for at least 2 samples
+# discard low counts (<0.5 RPM) entries for at least 2 samples
 keep = rowSums(cpm(matrix_ptgs)>0.5) >= 2	
-summary(keep) # 129 will be removed 
+summary(keep) # 132 will be removed 
 matrix_ptgs = matrix_ptgs[keep,]
 
 # Prepare data info
@@ -344,63 +337,73 @@ upset(fromList(ptgs_list))
 ```
 
 ```{r}
-# Sex-biased in flowers and tissue-specific in males
-baits_flm = intersect(flowers[["clusters"]], male[["clusters"]]) 
-baits_flm = as.data.frame(cpm(matrix_ptgs, log=TRUE)[baits_flm, ] ) %>% select(grep('B', colnames(matrix_ptgs))) 
-baits_flm = baits_flm %>% mutate(cluster = rownames(baits_flm)) %>% group_by(cluster) %>% summarise(female_exp = mean(c(F1B_dicer, F2B_dicer, F3B_dicer)), 
-                                                                                                    male_exp = mean(c(M1B_dicer, M2B_dicer, M4B_dicer)), 
-                                                                                                    sex_biased = male_exp>female_exp,
-                                                                                                    organ = "Sex-biased in flowers",
-                                                                                                    sex = "Tissue-specific in males") %>% add_count(organ)
-# Sex-biased in flowers and tissue-specific in females
-baits_flf = intersect(flowers[["clusters"]], female[["clusters"]]) 
-baits_flf = as.data.frame(cpm(matrix_ptgs, log=TRUE)[baits_flf, ] ) %>% select(grep('B', colnames(matrix_ptgs))) 
-baits_flf = baits_flf %>% mutate(cluster = rownames(baits_flf)) %>% group_by(cluster) %>% summarise(female_exp = mean(c(F1B_dicer, F2B_dicer, F3B_dicer)), 
-                                                                                                    male_exp = mean(c(M1B_dicer, M2B_dicer, M4B_dicer)), 
-                                                                                                    sex_biased = male_exp>female_exp,
-                                                                                                    organ = "Sex-biased in flowers",
-                                                                                                    sex = "Tissue-specific in females") %>% add_count(organ)
-# Sex-biased in leaves and tissue-specific in males
-baits_lvm = intersect(leaves[["clusters"]], male[["clusters"]]) 
-baits_lvm = as.data.frame(cpm(matrix_ptgs, log=TRUE)[baits_lvm, ] ) %>% select(grep('L', colnames(matrix_ptgs))) 
-baits_lvm = baits_lvm %>% mutate(cluster = rownames(baits_lvm)) %>% group_by(cluster) %>% summarise(female_exp = mean(c(F1L_dicer, F2L_dicer, F3L_dicer)), 
-                                                                                                    male_exp = mean(c(M1L_dicer, M2L_dicer, M4L_dicer)), 
-                                                                                                    sex_biased = male_exp>female_exp,
-                                                                                                    organ = "Sex-biased in leaves",
-                                                                                                    sex = "Tissue-specific in males") %>% add_count(organ)
-# Sex-biased in leaves and tissue-specific in females
-baits_lvf = intersect(leaves[["clusters"]], female[["clusters"]]) 
-baits_lvf = as.data.frame(cpm(matrix_ptgs, log=TRUE)[baits_lvf, ] ) %>% select(grep('L', colnames(matrix_ptgs))) 
-baits_lvf = baits_lvf %>% mutate(cluster = rownames(baits_lvf)) %>% group_by(cluster) %>% summarise(female_exp = mean(c(F1L_dicer, F2L_dicer, F3L_dicer)), 
-                                                                                                    male_exp = mean(c(M1L_dicer, M2L_dicer, M4L_dicer)), 
-                                                                                                    sex_biased = male_exp>female_exp,
-                                                                                                    organ = "Sex-biased in leaves",
-                                                                                                    sex = "Tissue-specific in females") %>% add_count(organ)
-# Merge
-bait_df = rbind(baits_flm, baits_flf, baits_lvm, baits_lvf)
-bait_df$sex = factor(bait_df$sex, levels = c("Tissue-specific in males", "Tissue-specific in females"))
+# Sex-biased in flowers
+baits_flowers = flowers[["clusters"]]
+baits_flowers = as.data.frame(cpm(matrix_ptgs, log=TRUE)[baits_flowers, ] ) %>% select(grep('B', colnames(matrix_ptgs))) 
+baits_flowers = baits_flowers %>% mutate(cluster = rownames(baits_flowers)) %>% group_by(cluster) %>% summarise(female_exp = mean(c(F1B_dicer, F2B_dicer, F3B_dicer)), 
+                                                                                                      male_exp = mean(c(M1B_dicer, M2B_dicer, M4B_dicer)), 
+                                                                                                      male_biased = male_exp>female_exp,
+                                                                                                      type = "Sex-biased in flowers") %>% add_count(type)
+# Sex-biased in leaves
+baits_leaves = leaves[["clusters"]]
+baits_leaves = as.data.frame(cpm(matrix_ptgs, log=TRUE)[baits_leaves, ] ) %>% select(grep('L', colnames(matrix_ptgs))) 
+baits_leaves = baits_leaves %>% mutate(cluster = rownames(baits_leaves)) %>% group_by(cluster) %>% summarise(female_exp = mean(c(F1L_dicer, F2L_dicer, F3L_dicer)), 
+                                                                                                   male_exp = mean(c(M1L_dicer, M2L_dicer, M4L_dicer)), 
+                                                                                                   male_biased = male_exp>female_exp,
+                                                                                                   type = "Sex-biased in leaves") %>% add_count(type)
+
+
+bait_df = rbind(baits_flowers, baits_leaves)
+
+# Get mir annotation
+anno_ptgs = read.table("raw/only_21-22_known_de_novo_f-y/Results.txt", header = T)
+mirnas_ptgs = anno_ptgs[, c("Name", "MIRNA")]
+
+# Merge annotation
+bait_df = bait_df %>% left_join(mirnas_ptgs, by = c("cluster"="Name"))
+bait_df = bait_df %>% arrange(MIRNA)
+
+levels(as.factor(bait_df$MIRNA)) # there are no MIRNAs! :(
 
 # Plot all
 ggplot(bait_df) +
   annotate(geom = "polygon", x = c(-Inf, Inf, Inf), y = c(-Inf, Inf, -Inf), fill = "gray8", alpha = 0.2 ) +
   geom_abline(intercept = 0, slope = 1, alpha=0.6, color="red2", size=1, linetype="dashed") +
-  geom_jitter(aes(female_exp, male_exp, fill=sex_biased), shape=21, size=6) +
+  geom_jitter(aes(female_exp, male_exp, fill=male_biased, shape=MIRNA, color=MIRNA), size=6) +
   geom_text(aes(x = -Inf, y = -Inf, label= paste0("n = ", n)), hjust = -.5, vjust   = -28) +
   scale_x_continuous(limits = c(-2.5, 10)) +
   scale_y_continuous(limits = c(-2.5, 10)) +
   labs(x= "♀ logRPM", y="♂ logRPM") +
   scale_fill_manual(values = met.brewer("Derain")) +
+  scale_shape_manual(values = c(21, 19)) +
+  scale_color_manual(values = c("black", "#2471a3")) +
   theme_bw() +
   theme(legend.position = "none",
         text = element_text(size = 20),
         panel.border = element_rect(color = "black", fill=NA),
         aspect.ratio=1) +
-  facet_grid(sex~organ)
+  facet_grid(~type)
 
 ggsave("results/desrnas.png", width = 8, height = 8, dpi = 600)
 ```
 
 ```{r}
-f1b_y = read.table("raw/depth/F1B_sff.depth", header = F)
+# check if Y is mapping in females
+# Get clusters from Y 
+rownames(anno_ptgs) = anno_ptgs$Name
+y_clusters = anno_ptgs[grep("scaffold", anno_ptgs$Chrom), ]
+#y_clusters = as.data.frame(cpm(drop_na(matrix_ptgs[rownames(y_clusters), ]), log = T)) # logRPM
+y_clusters = as.data.frame(matrix_ptgs[rownames(y_clusters), ]) # Raw reads
+y_clusters = y_clusters  %>% select(grep('F', colnames(y_clusters))) %>% mutate(cluster = rownames(y_clusters))
+y_clusters = melt(y_clusters, id.vars = "cluster", variable.name = "sample")
+
+
+ggplot(y_clusters) +
+  geom_point(aes(x=as.factor(cluster), y=value, color=sample)) +
+  scale_color_manual(values = met.brewer("Lakota")) +
+  labs(x="Y chromosome sRNA clusters", y="Aligned reads") +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
 ```
+
 
