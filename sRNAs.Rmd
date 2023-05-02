@@ -14,6 +14,7 @@ library(FactoMineR)
 library(UpSetR)
 library(DESeq2)
 library(edgeR)
+library(GENIE3)
 #### Visualization
 library(MetBrewer)
 ```
@@ -148,7 +149,7 @@ ggsave("results/fractions.png", width = 6, height = 6, dpi = 600)
 
 ## 2.- Quantification analysis and differential expression
 
-#### PTGS
+### PTGS
 
 ```{r pca}
 ### All together
@@ -192,6 +193,7 @@ row.names(matrix_ptgs) = exp_ptgs$Name
 keep = rowSums(cpm(matrix_ptgs)>0.5) >= 2	
 summary(keep) # 132 will be removed 
 matrix_ptgs = matrix_ptgs[keep,]
+rm(keep)
 
 # Prepare data info
 datainfo = samples[, 2:4]
@@ -214,7 +216,7 @@ deseq_object = DESeq(deseq_object)
 deseq_table = as.data.frame(results(deseq_object, pAdjustMethod = "BH"))
 
 # Get DE clusters that fall under the selection threshold (pvalue < 0.001)
-deseq = rownames(deseq_table[which(deseq_table$pvalue < 0.001), ] )
+deseq = rownames(filter(deseq_table, pvalue<0.001 & {log2FoldChange>1 | log2FoldChange<(-1)} ) )
 
 ######## EDGER
 
@@ -239,7 +241,7 @@ lrt <- glmLRT(fit , coef = 2)
 edger_table = topTags(lrt , n = Inf, sort.by = "PValue", adjust.method = "BH")$table
 
 # Extract most differential expressed genes
-edger = rownames(edger_table[which(edger_table$PValue < 0.001), ] )
+edger = rownames(filter(edger_table, PValue<0.001 & {logFC>1 | logFC<(-1)} ))
 
 ######### LIMA VOOM 
 
@@ -262,7 +264,7 @@ voomed.fitted  <- eBayes(voomed.fitted)
 
 # extract most differential expressed genes and table
 lvoom_table = topTable(voomed.fitted, adjust="BH", number = Inf, sort.by="P")
-lvoom = rownames(lvoom_table[which(lvoom_table$P.Value < 0.001), ] )
+lvoom = rownames(filter(lvoom_table, P.Value<0.001 & {logFC>1 | logFC<(-1)} ))
 
 ######## Get the clusters that were diferentially expressed in at least 2 methods
 clusters = unique(c(intersect(deseq, edger), intersect(deseq, lvoom), intersect(edger, lvoom)))
@@ -327,30 +329,44 @@ male = pyramide(maptgs, maptgs_info, ~organ, magroups)
 
 ### Intercepts for PTGS
 
-```{r upset Deseq}
+```{r upset ptgs}
 ptgs_list = list("Sex-biased in flower buds" = flowers[["clusters"]], 
                   "Sex-biased in leaves" = leaves[["clusters"]], 
                   "Tissue-biased in females" = female[["clusters"]], 
                   "Tissue-biased in males" = male[["clusters"]])
 
-upset(fromList(ptgs_list))
+comparisons = list(list("Sex-biased in flower buds", "Tissue-biased in males"),list("Sex-biased in leaves", "Tissue-biased in females"))
+
+upset(fromList(ptgs_list),
+      nintersects = 8,
+      mainbar.y.label = "Shared DE sRNA clusters",
+      sets.x.label = "DE sRNA clusters", 
+      matrix.color = met.brewer("Egypt")[2],
+      main.bar.color = met.brewer("Egypt")[3],
+      sets.bar.color = met.brewer("Egypt")[4],
+      shade.color = met.brewer("Egypt")[2],
+      point.size = 10,
+      line.size = 4,
+      text.scale = c(3, 4, 3, 4, 5, 4),
+      mb.ratio = c(0.5, 0.5)
+      )
 ```
 
-```{r}
+```{r plot de clusters}
 # Sex-biased in flowers
 baits_flowers = flowers[["clusters"]]
 baits_flowers = as.data.frame(cpm(matrix_ptgs, log=TRUE)[baits_flowers, ] ) %>% select(grep('B', colnames(matrix_ptgs))) 
 baits_flowers = baits_flowers %>% mutate(cluster = rownames(baits_flowers)) %>% group_by(cluster) %>% summarise(female_exp = mean(c(F1B_dicer, F2B_dicer, F3B_dicer)), 
                                                                                                       male_exp = mean(c(M1B_dicer, M2B_dicer, M4B_dicer)), 
                                                                                                       male_biased = male_exp>female_exp,
-                                                                                                      type = "Sex-biased in flowers") %>% add_count(type)
+                                                                                                      type = "Sex-biased sRNAs in flowers") %>% add_count(type)
 # Sex-biased in leaves
 baits_leaves = leaves[["clusters"]]
 baits_leaves = as.data.frame(cpm(matrix_ptgs, log=TRUE)[baits_leaves, ] ) %>% select(grep('L', colnames(matrix_ptgs))) 
 baits_leaves = baits_leaves %>% mutate(cluster = rownames(baits_leaves)) %>% group_by(cluster) %>% summarise(female_exp = mean(c(F1L_dicer, F2L_dicer, F3L_dicer)), 
                                                                                                    male_exp = mean(c(M1L_dicer, M2L_dicer, M4L_dicer)), 
                                                                                                    male_biased = male_exp>female_exp,
-                                                                                                   type = "Sex-biased in leaves") %>% add_count(type)
+                                                                                                   type = "Sex-biased sRNAs in leaves") %>% add_count(type)
 
 
 bait_df = rbind(baits_flowers, baits_leaves)
@@ -369,7 +385,7 @@ levels(as.factor(bait_df$MIRNA)) # there are no MIRNAs! :(
 ggplot(bait_df) +
   annotate(geom = "polygon", x = c(-Inf, Inf, Inf), y = c(-Inf, Inf, -Inf), fill = "gray8", alpha = 0.2 ) +
   geom_abline(intercept = 0, slope = 1, alpha=0.6, color="red2", size=1, linetype="dashed") +
-  geom_jitter(aes(female_exp, male_exp, fill=male_biased, shape=MIRNA, color=MIRNA), size=6) +
+  geom_jitter(aes(female_exp, male_exp, fill=male_biased, shape=MIRNA, color=MIRNA), size=4) +
   geom_text(aes(x = -Inf, y = -Inf, label= paste0("n = ", n)), hjust = -.5, vjust   = -28) +
   scale_x_continuous(limits = c(-2.5, 10)) +
   scale_y_continuous(limits = c(-2.5, 10)) +
@@ -387,23 +403,217 @@ ggplot(bait_df) +
 ggsave("results/desrnas.png", width = 8, height = 8, dpi = 600)
 ```
 
-```{r}
-# check if Y is mapping in females
-# Get clusters from Y 
+```{r save results ptgs}
 rownames(anno_ptgs) = anno_ptgs$Name
-y_clusters = anno_ptgs[grep("scaffold", anno_ptgs$Chrom), ]
-#y_clusters = as.data.frame(cpm(drop_na(matrix_ptgs[rownames(y_clusters), ]), log = T)) # logRPM
-y_clusters = as.data.frame(matrix_ptgs[rownames(y_clusters), ]) # Raw reads
-y_clusters = y_clusters  %>% select(grep('F', colnames(y_clusters))) %>% mutate(cluster = rownames(y_clusters))
-y_clusters = melt(y_clusters, id.vars = "cluster", variable.name = "sample")
 
+# Sex biased in Flowers
+temp_bed = anno_ptgs[flowers[["clusters"]], ][,c("Chrom", "Start", "End", "Name", "MajorRNA", "Strand", "MIRNA")] %>% mutate("sex_biased_flowers_ptgs")
+write.table(temp_bed, file = "results/differential_expression/sex_biased_flowers_ptgs.bed", quote = F, sep = "\t", col.names = F, row.names = F)
+write.table(flowers[["DeSeq2 table"]] %>% mutate(Name = rownames(flowers[["DeSeq2 table"]])), file = "results/differential_expression/sex_biased_flowers_ptgs_deseq.tsv", quote = F, sep = "\t", col.names = T, row.names = F)
+write.table(flowers[["EdgeR table"]] %>% mutate(Name = rownames(flowers[["EdgeR table"]])), file = "results/differential_expression/sex_biased_flowers_ptgs_edger.tsv", quote = F, sep = "\t", col.names = T, row.names = F)
+write.table(flowers[["Lima-Voom table"]] %>% mutate(Name = rownames(flowers[["Lima-Voom table"]])), file = "results/differential_expression/sex_biased_flowers_ptgs_lvoom.tsv", quote = F, sep = "\t", col.names = T, row.names = F)
 
-ggplot(y_clusters) +
-  geom_point(aes(x=as.factor(cluster), y=value, color=sample)) +
-  scale_color_manual(values = met.brewer("Lakota")) +
-  labs(x="Y chromosome sRNA clusters", y="Aligned reads") +
-  theme(axis.text.x = element_blank(),
-        axis.ticks.x = element_blank())
+# Sex biased in Leaves
+temp_bed = anno_ptgs[leaves[["clusters"]], ][,c("Chrom", "Start", "End", "Name", "MajorRNA", "Strand", "MIRNA")] %>% mutate("sex_biased_leaves_ptgs")
+write.table(temp_bed, file = "results/differential_expression/sex_biased_leaves_ptgs.bed", quote = F, sep = "\t", col.names = F, row.names = F)
+write.table(leaves[["DeSeq2 table"]] %>% mutate(Name = rownames(leaves[["DeSeq2 table"]])), file = "results/differential_expression/sex_biased_leaves_ptgs_deseq.tsv", quote = F, sep = "\t", col.names = T, row.names = F)
+write.table(leaves[["EdgeR table"]] %>% mutate(Name = rownames(leaves[["EdgeR table"]])), file = "results/differential_expression/sex_biased_leaves_ptgs_edger.tsv", quote = F, sep = "\t", col.names = T, row.names = F)
+write.table(leaves[["Lima-Voom table"]] %>% mutate(Name = rownames(leaves[["Lima-Voom table"]])), file = "results/differential_expression/sex_biased_leaves_ptgs_lvoom.tsv", quote = F, sep = "\t", col.names = T, row.names = F)
+
+# Tissue biased in Females
+temp_bed = anno_ptgs[female[["clusters"]], ][,c("Chrom", "Start", "End", "Name", "MajorRNA", "Strand", "MIRNA")] %>% mutate("tissue_biased_females_ptgs")
+write.table(temp_bed, file = "results/differential_expression/tissue_biased_females_ptgs.bed", quote = F, sep = "\t", col.names = F, row.names = F)
+write.table(female[["DeSeq2 table"]] %>% mutate(Name = rownames(female[["DeSeq2 table"]])), file = "results/differential_expression/tissue_biased_females_ptgs_deseq.tsv", quote = F, sep = "\t", col.names = T, row.names = F)
+write.table(female[["EdgeR table"]] %>% mutate(Name = rownames(female[["EdgeR table"]])), file = "results/differential_expression/tissue_biased_females_ptgs_edger.tsv", quote = F, sep = "\t", col.names = T, row.names = F)
+write.table(female[["Lima-Voom table"]] %>% mutate(Name = rownames(female[["Lima-Voom table"]])), file = "results/differential_expression/stissue_biased_females_ptgs_lvoom.tsv", quote = F, sep = "\t", col.names = T, row.names = F)
+
+# Tissue biased in Males
+temp_bed = anno_ptgs[male[["clusters"]], ][,c("Chrom", "Start", "End", "Name", "MajorRNA", "Strand", "MIRNA")] %>% mutate("tissue_biased_males_ptgs")
+write.table(temp_bed, file = "results/differential_expression/tissue_biased_males_ptgs.bed", quote = F, sep = "\t", col.names = F, row.names = F)
+write.table(male[["DeSeq2 table"]] %>% mutate(Name = rownames(male[["DeSeq2 table"]])), file = "results/differential_expression/tissue_biased_males_ptgs_deseq.tsv", quote = F, sep = "\t", col.names = T, row.names = F)
+write.table(male[["EdgeR table"]] %>% mutate(Name = rownames(male[["EdgeR table"]])), file = "results/differential_expression/tissue_biased_males_ptgs_edger.tsv", quote = F, sep = "\t", col.names = T, row.names = F)
+write.table(male[["Lima-Voom table"]] %>% mutate(Name = rownames(male[["Lima-Voom table"]])), file = "results/differential_expression/stissue_biased_males_ptgs_lvoom.tsv", quote = F, sep = "\t", col.names = T, row.names = F)
 ```
 
+
+## 3.- Differential expression of genes
+
+```{r kallisto raw prep}
+# clean and transform data
+kall = read.table(file = "rna-seq/kallisto/raw_counts.tsv", header = T)
+rownames(kall) = kall$target_id
+kall = kall[, -1]
+
+# Round counts cause Kallisto returns decimals after the bootstrapping
+kall = round(kall)
+
+# discard low counts (<0.5 RPM) entries for at least 2 samples
+keep = rowSums(cpm(kall)>0.5) >= 2	
+summary(keep) # 6459 will be removed 
+kall = kall[keep,]
+rm(keep)
+
+# Prepare data info
+# Four female plants (C1_26, C1_27, C1_29, C1_34) and four males (C1_01, C1_03, C1_04, C1_05) were sequenced for flower buds ("_B_" in names) and leaves ("_L_" in names). 
+
+kall_info = data.frame(sex = c(rep("Male", 8), rep("Female", 8)),
+                       organ = rep(c("Flower bud", "Leaf"), 8),
+                       row.names = colnames(kall))
+
+# check all samples are included and in the same order
+
+all(colnames(kall) %in% rownames(kall_info))
+all(colnames(kall) == rownames(kall_info))
+```
+
+### Differential Expression for sex-biased genes in Flowers
+
+```{r flowers sbge}
+# Select flower bud samples
+fsbge = kall %>% select(grep('B', colnames(kall)))
+fsbge_info = kall_info %>% filter(organ=="Flower bud")
+# define groups (in the same order as the table)
+fgroups = kall_info[kall_info$organ == "Flower bud", ]$sex
+
+flowers_genes = pyramide(fsbge, fsbge_info, ~sex, fgroups)
+
+fwrite(as.data.table(flowers_genes[["clusters"]]), "try1.txt")
+```
+
+### Differential Expression for sex-biased genes in Leaves
+
+```{r leaves sbge}
+# Select leaf samples
+lsbge = kall %>% select(grep('L', colnames(kall)))
+lsbge_info = kall_info %>% filter(organ=="Leaf")
+# define groups (in the same order as the table)
+lgroups = kall_info[kall_info$organ == "Leaf", ]$sex
+
+leaves_genes = pyramide(lsbge, lsbge_info, ~sex, lgroups)
+```
+
+### Differential Expression for tissue-biased genes in Females
+
+```{r female ptgs}
+# Select female samples
+fet_sbge = kall %>% select(rownames(kall_info[kall_info$sex=="Female", ]))
+fet_sbge_info = kall_info %>% filter(sex=="Female")
+# define groups (in the same order as the table)
+fegroups = kall_info[kall_info$sex == "Female", ]$organ
+
+female_genes = pyramide(fet_sbge, fet_sbge_info, ~organ, fegroups)
+```
+
+### Differential Expression for tissue-biased genes in Males
+
+```{r female ptgs}
+# Select male samples
+mt_sbge = kall %>% select(rownames(kall_info[kall_info$sex=="Male", ]))
+mt_sbge_info = kall_info %>% filter(sex=="Male")
+# define groups (in the same order as the table)
+mgroups = kall_info[kall_info$sex == "Male", ]$organ
+
+male_genes = pyramide(mt_sbge, mt_sbge_info, ~organ, mgroups)
+```
+
+### Intersections and plot
+
+```{r upset sbge}
+sbge_list = list("Sex-biased in flower buds" = flowers_genes[["clusters"]], 
+                  "Sex-biased in leaves" = leaves_genes[["clusters"]], 
+                  "Tissue-biased in females" = female_genes[["clusters"]], 
+                  "Tissue-biased in males" = male_genes[["clusters"]])
+
+upset(fromList(sbge_list))
+```
+
+```{r plot de sbge}
+# Read TPM data and transform
+tpm = read.table("rna-seq/kallisto/tpm.tsv", header = T)
+rownames(tpm) = tpm$target_id
+tpm = tpm[, -1]
+
+# Sex-biased in flowers
+baits_flowers = flowers_genes[["clusters"]]
+baits_flowers = as.data.frame(tpm[baits_flowers, ]) %>% select(grep('B', colnames(tpm))) 
+baits_flowers = baits_flowers %>% mutate(gene = rownames(baits_flowers)) %>% group_by(gene) %>% summarise(female_exp = mean(c(C1_26_B, C1_27_B, C1_29_B_combined, C1_34_B_combined)),
+                                                                                                          male_exp = mean(c(C1_01_B, C1_03_B, C1_04_B_combined, C1_05_B_combined)),
+                                                                                                          male_biased = male_exp>female_exp,
+                                                                                                          type = "Sex-biased genes in flowers") %>% add_count(type)
+
+# Sex-biased in leaves
+baits_leaves = leaves_genes[["clusters"]]
+baits_leaves = as.data.frame(tpm[baits_leaves, ]) %>% select(grep('L', colnames(tpm))) 
+baits_leaves = baits_leaves %>% mutate(gene = rownames(baits_leaves)) %>% group_by(gene) %>% summarise(female_exp = mean(c(C1_26_L, C1_27_L, C1_29_L, C1_34_L)),
+                                                                                                       male_exp = mean(c(C1_01_L, C1_03_L, C1_04_L, C1_05_L)),
+                                                                                                       male_biased = male_exp>female_exp,
+                                                                                                       type = "Sex-biased genes in leaves") %>% add_count(type)
+
+
+# Merge
+bait_df = rbind(baits_flowers, baits_leaves)
+
+# Plot all
+ggplot(bait_df) +
+  annotate(geom = "polygon", x = c(-Inf, Inf, Inf), y = c(-Inf, Inf, -Inf), fill = "gray8", alpha = 0.2 ) +
+  geom_abline(intercept = 0, slope = 1, alpha=0.6, color="red2", size=1, linetype="dashed") +
+  geom_jitter(aes(female_exp, male_exp, fill=male_biased), shape=21, size=4) +
+  geom_text(aes(x = -Inf, y = -Inf, label= paste0("n = ", n)), hjust = -3, vjust = -28) +
+  scale_x_continuous(limits = c(-2.5, 10)) +
+  scale_y_continuous(limits = c(-2.5, 10)) +
+  labs(x= "♀ TPM", y="♂ TPM") +
+  scale_fill_manual(values = met.brewer("Derain")) +
+  scale_y_continuous(limits = c(0,10)) +
+  scale_x_continuous(limits = c(0,10)) +
+  theme_bw() +
+  theme(legend.position = "none",
+        text = element_text(size = 20),
+        panel.border = element_rect(color = "black", fill=NA),
+        aspect.ratio=1) +
+  facet_grid(~type)
+
+ggsave("results/sbge.png", width = 8, height = 8, dpi = 600)
+```
+
+
+```{r overlap}
+# formatting of the data
+sRNA_clusters = as.data.table(anno_ptgs) # transform
+sRNA_clusters[, min := min(Start, End), by=1:nrow(sRNA_clusters)] # unstrand start 
+sRNA_clusters[, max := max(Start, End), by=1:nrow(sRNA_clusters)] # unstrand end
+# get gene annotations
+genesCoordinates = fread("annotation/ALLGenesFromVulgarisIntoLatifolia.txt")
+genesCoordinates[, ':='(query_sequence = NULL, flag = NULL, mapping_quality=NULL)] # remove columns
+genesCoordinates[, gene_name := strsplit(gene_name, '::')[[1]][1], by=1:nrow(genesCoordinates)] # keep simple gene IDs
+genesCoordinates[, min := min(start_pos, end_pos), by=1:nrow(genesCoordinates)]
+genesCoordinates[, max := max(start_pos, end_pos), by=1:nrow(genesCoordinates)]
+# Add 400bp upstream and downstream
+genesCoordinates[, min := min - 400, by=1:nrow(genesCoordinates)]
+genesCoordinates[, max := max + 400, by=1:nrow(genesCoordinates)]
+
+# select for DE
+sRNA_clusters = sRNA_clusters[Name %in% flowers[["clusters"]]] # Select DE sNRAs
+genesCoordinates = genesCoordinates[gene_name %in% flowers_genes[["clusters"]]] # select DE genes
+
+# Initiate data.table containing the header for two columns: gene name and name of overlapping clusters
+header = list('gene_name', 'overlapping_cluster')
+fwrite(header, 'Overlapping_cluster_numbers.txt', append = FALSE, sep='\t')
+
+# For each gene, get all overlapping siRNA clusters
+for (i in seq(1, nrow(genesCoordinates))) {
+  # Current gene info
+  CurrentGene <- genesCoordinates$gene_name[i]
+  CurrentChr <- genesCoordinates$scaffold[i]
+  Currentmin <- genesCoordinates$min[i]
+  Currentmax <- genesCoordinates$max[i]
+  # make a subset of the siRNA cluster data table for clusters overlapping the gene
+  # overlap happens if cluster minimum is lower than gene maximum AND cluster maximum is higher than gene minimum
+  siRNAsubset <- sRNA_clusters[(Chrom == CurrentChr)&(min < Currentmax)&(max > Currentmin)]
+  # write a line with output and append it to output data.table
+#  line <- list(CurrentGene, nrow(siRNAsubset))
+  line = as.data.frame(siRNAsubset$Name) %>% mutate(CurrentGene) %>% relocate(CurrentGene)
+  fwrite(line, 'Overlapping_cluster_numbers.txt', append = TRUE, sep='\t')
+}
+
+```
 
