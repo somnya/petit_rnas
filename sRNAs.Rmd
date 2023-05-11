@@ -15,13 +15,18 @@ library(UpSetR)
 library(DESeq2)
 library(edgeR)
 library(GENIE3)
+library(igraph)
 #### Visualization
 library(MetBrewer)
+library(ggraph)
+library(circlize)
 ```
 
-## 1 .- Exploration of the distribution of species abundance and lengths in the raw libraries
+## 1.- Exploration of the distribution of species abundance and lengths in the raw libraries
 
-```{r species abundance and lengths}
+#### Raw libraries
+
+```{r species abundance and lengths, eval=FALSE}
 # abundance of sRNA species
 ### Select only for 21,22 and 24
 species_srna = function(path, sample_name, sex_id, tissue_id) {
@@ -54,7 +59,7 @@ m4b=species_srna("raw/sRNA_MGX/trimmed/M4B_final_trimming.fastq_count.tsv", "M4B
 
 ```
 
-```{r abundance densities}
+```{r abundance densities, eval=FALSE}
 ### Species abundance
 
 spp = do.call(rbind, lapply(list(f1l[[3]],
@@ -88,7 +93,7 @@ ggplot(spp) +
 ggsave("results/sp_expression.png", width = 6, height = 5, dpi = 600)
 ```
 
-```{r reduced }
+```{r reduced, eval=FALSE }
 ### With 320880141 total reads and mincov of 1 reads per million, the min read depth is 321
 ### For RPM > 1
 no_uniq = spp[spp$counts>321, ]
@@ -101,7 +106,7 @@ ggplot(no_uniq) +
 ggsave("results/reduced_sp_expression.png", width = 6, height = 5, dpi = 600)
 ```
 
-```{r lengths}
+```{r lengths, eval=FALSE}
 lgt = do.call(rbind, lapply(list(f1l[[2]],
              f1b[[2]],
              f2l[[2]],
@@ -125,7 +130,7 @@ ggplot(lgt) +
 ggsave("results/length.png", width = 6, height = 5, dpi = 600)
 ```
 
-After the alignment and quantification with ShortStack
+#### After the alignment and quantification with ShortStack
 
 ```{r fraction of the aligned reads}
 fracs = read.table("raw/ShortStack_results/alignment_details.tsv", header = T)
@@ -145,9 +150,97 @@ ggplot(fracs) +
   theme(text = element_text(size=20))
 
 ggsave("results/fractions.png", width = 6, height = 6, dpi = 600)
+
+rm(fracs)
 ```
 
-## 2.- Quantification analysis and differential expression
+```{r circos plot, eval=FALSE}
+# set boundaries
+chr_sizes = read.table("chromSizes.txt")
+colnames(chr_sizes) = c("chr", "end")
+chr_sizes = chr_sizes %>% mutate(start = "1") %>% relocate(start, .before = end)
+
+# get density of PTGS clusters
+ptgs_bed = read.table("raw/only_21-22_known_de_novo_f-y/Results.gff3")[, c(1, 4:5)]
+colnames(ptgs_bed) = c("chr", "start", "end")
+
+# get density of PTGS clusters
+rddm_bed = read.table("raw/only_24_f-y/Results.gff3")[, c(1, 4:5)]
+colnames(rddm_bed) = c("chr", "start", "end")
+
+# load gene annotation
+gene_bed = read.table("annotation/genes.bed")
+#repeats_bed = read.table("annotation/repeats.bed", sep = "\t")
+tes_bed =  read.table("annotation/tes.bed", sep = "\t")
+
+# plot densities
+{
+png(file="results/srna_density.png", width=2000, height=2000)
+circos.par("clock.wise"=TRUE, start.degree=86, gap.degree=c(rep(1,18), 8))
+circos.genomicInitialize(chr_sizes, plotType = c("axis"), axis.labels.cex=2)
+circos.track(ylim = c(0, 0.05), bg.border = NA, bg.col = c(viridis::inferno(11, begin=0.15, end=0.9, direction = -1), "gray", rep("black", 8)) , track.height = 0.05)
+circos.genomicDensity(gene_bed, col = c("#ee4d80"), track.height = 0.1, count_by = "number")
+circos.genomicDensity(tes_bed, col = c("#b52ac6"), track.height = 0.1, count_by = "number")
+circos.genomicDensity(ptgs_bed, col = c("#5EBF75"), track.height = 0.1, count_by = "number")
+circos.genomicDensity(rddm_bed, col = c("#6276F6"), track.height = 0.1, count_by = "number")
+circos.clear()
+dev.off()
+}
+
+#### Circos plot of sRNA mapping per 1mb windows
+
+# create function
+surco = function(toy, lib_size_1, lib_size_2, lib_size_3) {
+          # set column names
+          colnames(toy) = c("chr", "start", "end", "depth_1", "depth_2", "depth_3", "chr_w", "start_w", "end_w", "wind")
+          # calculate mead depth per window, normalize by library size
+          toy[, mean_depth_1 := mean(depth_1)/lib_size_1, by=.(wind)]
+          toy[, mean_depth_2 := mean(depth_2)/lib_size_2, by=.(wind)]
+          toy[, mean_depth_3 := mean(depth_3)/lib_size_3, by=.(wind)]
+          # get one row per window
+          toy = unique(toy, by = "wind")[, .(chr_w, start_w, end_w, wind, mean_depth_1, mean_depth_2, mean_depth_3)]
+          # overall mean and multiply by 1m
+          toy[, mean_depth := (mean_depth_1 + mean_depth_2 + mean_depth_3)*(1000000/3), by=1:nrow(toy)]
+          toy[, log_depth := log(mean_depth), by=1:nrow(toy)]
+          # print bed file + mean depth per million
+          toy[, .(chr_w, start_w, end_w, mean_depth, log_depth)]
+}
+
+# load files and do computations (library sizes are in the jupyter notebook)
+
+females_depth_ptgs = fread("raw/depth/females_flowers_ptgs.depth")
+females_depth_ptgs = surco(females_depth_ptgs, 19022354, 10510431, 8511923)
+
+females_depth_rddm = fread("raw/depth/females_flowers_rddm.depth")
+females_depth_rddm = surco(females_depth_rddm, 35912648, 19178882, 16733766)
+
+males_depth_ptgs = fread("raw/depth/males_flowers_ptgs.depth")
+males_depth_ptgs = surco(males_depth_ptgs, 6486661, 9227331, 9622793)
+
+males_depth_rddm = fread("raw/depth/males_flowers_rddm.depth")
+males_depth_rddm = surco(males_depth_rddm, 6737939, 14716350, 13959309)
+
+
+# plot circos
+{
+png(file="results/srna_depth.png", width=2000, height=2000)
+circos.par("clock.wise"=TRUE, start.degree=86, gap.degree=c(rep(1,18), 8))
+circos.genomicInitialize(chr_sizes, plotType = c("axis"), axis.labels.cex=2)
+circos.track(ylim = c(0, 0.05), bg.border = NA, bg.col = c(viridis::inferno(11, begin=0.15, end=0.9, direction = -1), "gray", rep("black", 8)) , track.height = 0.05)
+circos.genomicDensity(gene_bed, col = c("#ee4d80"), track.height = 0.1, count_by = "number")
+circos.genomicDensity(tes_bed, col = c("#b52ac6"), track.height = 0.1, count_by = "number")
+circos.genomicHeatmap(males_depth_ptgs, na_col= "white", numeric.column="log_depth", heatmap_height = 0.05, connection_height=NULL, col= colorRamp2(c(-4, 5), c("white", "#2f8d45")))
+circos.genomicHeatmap(males_depth_rddm, na_col= "white", numeric.column="log_depth", heatmap_height = 0.05, connection_height=NULL, col= colorRamp2(c(-4, 5), c("white", "#4453b1")))
+circos.genomicHeatmap(females_depth_ptgs, na_col= "white", numeric.column="log_depth", heatmap_height = 0.05, connection_height=NULL, col= colorRamp2(c(-4, 5), c("white", "#2f8d45")))
+circos.genomicHeatmap(females_depth_rddm, na_col= "white", numeric.column="log_depth", heatmap_height = 0.05, connection_height=NULL, col= colorRamp2(c(-4, 5), c("white", "#4453b1")))
+circos.clear()
+dev.off()
+}
+
+```
+
+
+## 2.- Quantification analysis and differential expression of 21-22 sNRAs
 
 ### PTGS
 
@@ -155,7 +248,8 @@ ggsave("results/fractions.png", width = 6, height = 6, dpi = 600)
 ### All together
 exp_ptgs = read.table("raw/only_21-22_known_de_novo_f-y/Counts.txt", header = T)
 
-transposed = t(exp_ptgs[, 4:15])
+transposed = t(cpm(exp_ptgs[, 4:15], log = T))
+
 colnames(transposed) = exp_ptgs$Name
 samples = data.frame(samples = rownames(transposed), 
                      tissue = c(rep(c("Female, Flower bud", "Female, Leaf"), 3), rep(c("Male, Flower bud", "Male, Leaf"), 3)),
@@ -167,21 +261,26 @@ pca_exp = PCA(transposed, ncp = 20, graph = F)
 
 pcadf = data.frame(samples, 
                    pca1 = as.data.frame(pca_exp$ind)[,1],
-                   pca2 = as.data.frame(pca_exp$ind)[,2],
-                   pca3 = as.data.frame(pca_exp$ind)[,3])
+                   pca2 = as.data.frame(pca_exp$ind)[,2])
 
 ggplot(pcadf) +
   geom_hline(yintercept = 0, color="gray40")+
   geom_vline(xintercept = 0, color="gray40")+
-  geom_jitter(aes(pca1, pca2, size=pca3, fill=tissue), shape=21) +
-  labs(x="Component 1 (35.67%)", y= "Component 2 (13.39%)", size= "Component 3 (10.54%)", fill= "Tissue") +
+  geom_jitter(aes(pca1, pca2, fill=tissue), shape=21, size=8) +
+  labs(x="Component 1 (35.67%)", y= "Component 2 (13.39%)", fill= "Tissue") +
   scale_fill_manual(values = c("#3ab98f", "#2ab1c6", "#ee4d80", "#b52ac6")) +
-  scale_size(range = c(2,8)) +
   guides(fill = guide_legend(override.aes = list(size=8))) +
   coord_fixed(ratio = 1.5) +
-  theme_bw(base_size = 20)
+  theme_bw(base_size = 20) +
+  theme(legend.position = c(0.8, 0.7),
+        legend.text = element_text(size = 10),
+        legend.title = element_text(size = 10),
+        legend.background = element_rect(fill = "gray"),
+        aspect.ratio=1)
 
-ggsave("results/pca.png", width = 10, height = 10, dpi = 600)
+ggsave("results/pca.png", width = 8, height = 6, dpi = 600)
+
+rm(pcadf, pca_exp)
 ```
 
 ```{r data prep, 21-22}
@@ -287,6 +386,8 @@ fptgs_info = datainfo %>% filter(organ=="Flower bud")
 fgroups = datainfo[datainfo$organ == "Flower bud", ]$sex
 
 flowers = pyramide(fptgs, fptgs_info, ~sex, fgroups)
+
+rm(fptgs, fptgs_info, fgroups)
 ```
 
 
@@ -300,6 +401,8 @@ lptgs_info = datainfo %>% filter(organ=="Leaf")
 lgroups = datainfo[datainfo$organ == "Leaf", ]$sex
 
 leaves = pyramide(lptgs, lptgs_info, ~sex, lgroups)
+
+rm(lptgs, lptgs_info, lgroups)
 ```
 
 
@@ -313,6 +416,8 @@ feptgs_info = datainfo %>% filter(sex=="Female")
 fegroups = datainfo[datainfo$sex == "Female", ]$organ
 
 female = pyramide(feptgs, feptgs_info, ~organ, fegroups)
+
+rm(feptgs, feptgs_info, fegroups)
 ```
 
 ### Differential Expression for tissue-biased/specific siRNAs (21-22nt) in Males
@@ -325,6 +430,8 @@ maptgs_info = datainfo %>% filter(sex=="Male")
 magroups = datainfo[datainfo$sex == "Male", ]$organ
 
 male = pyramide(maptgs, maptgs_info, ~organ, magroups)
+
+rm(maptgs, maptgs_info, magroups)
 ```
 
 ### Intercepts for PTGS
@@ -334,8 +441,6 @@ ptgs_list = list("Sex-biased in flower buds" = flowers[["clusters"]],
                   "Sex-biased in leaves" = leaves[["clusters"]], 
                   "Tissue-biased in females" = female[["clusters"]], 
                   "Tissue-biased in males" = male[["clusters"]])
-
-comparisons = list(list("Sex-biased in flower buds", "Tissue-biased in males"),list("Sex-biased in leaves", "Tissue-biased in females"))
 
 upset(fromList(ptgs_list),
       nintersects = 8,
@@ -350,9 +455,11 @@ upset(fromList(ptgs_list),
       text.scale = c(3, 4, 3, 4, 5, 4),
       mb.ratio = c(0.5, 0.5)
       )
+
+rm(pt)
 ```
 
-```{r plot de clusters}
+```{r plot of clusters}
 # Sex-biased in flowers
 baits_flowers = flowers[["clusters"]]
 baits_flowers = as.data.frame(cpm(matrix_ptgs, log=TRUE)[baits_flowers, ] ) %>% select(grep('B', colnames(matrix_ptgs))) 
@@ -401,9 +508,11 @@ ggplot(bait_df) +
   facet_grid(~type)
 
 ggsave("results/desrnas.png", width = 8, height = 8, dpi = 600)
+
+rm(baits_flowers, baits_leaves, bait_df, anno_ptgs, mirnas_ptgs)
 ```
 
-```{r save results ptgs}
+```{r save results ptgs, eval=FALSE, include=FALSE}
 rownames(anno_ptgs) = anno_ptgs$Name
 
 # Sex biased in Flowers
@@ -425,14 +534,16 @@ temp_bed = anno_ptgs[female[["clusters"]], ][,c("Chrom", "Start", "End", "Name",
 write.table(temp_bed, file = "results/differential_expression/tissue_biased_females_ptgs.bed", quote = F, sep = "\t", col.names = F, row.names = F)
 write.table(female[["DeSeq2 table"]] %>% mutate(Name = rownames(female[["DeSeq2 table"]])), file = "results/differential_expression/tissue_biased_females_ptgs_deseq.tsv", quote = F, sep = "\t", col.names = T, row.names = F)
 write.table(female[["EdgeR table"]] %>% mutate(Name = rownames(female[["EdgeR table"]])), file = "results/differential_expression/tissue_biased_females_ptgs_edger.tsv", quote = F, sep = "\t", col.names = T, row.names = F)
-write.table(female[["Lima-Voom table"]] %>% mutate(Name = rownames(female[["Lima-Voom table"]])), file = "results/differential_expression/stissue_biased_females_ptgs_lvoom.tsv", quote = F, sep = "\t", col.names = T, row.names = F)
+write.table(female[["Lima-Voom table"]] %>% mutate(Name = rownames(female[["Lima-Voom table"]])), file = "results/differential_expression/tissue_biased_females_ptgs_lvoom.tsv", quote = F, sep = "\t", col.names = T, row.names = F)
 
 # Tissue biased in Males
 temp_bed = anno_ptgs[male[["clusters"]], ][,c("Chrom", "Start", "End", "Name", "MajorRNA", "Strand", "MIRNA")] %>% mutate("tissue_biased_males_ptgs")
 write.table(temp_bed, file = "results/differential_expression/tissue_biased_males_ptgs.bed", quote = F, sep = "\t", col.names = F, row.names = F)
 write.table(male[["DeSeq2 table"]] %>% mutate(Name = rownames(male[["DeSeq2 table"]])), file = "results/differential_expression/tissue_biased_males_ptgs_deseq.tsv", quote = F, sep = "\t", col.names = T, row.names = F)
 write.table(male[["EdgeR table"]] %>% mutate(Name = rownames(male[["EdgeR table"]])), file = "results/differential_expression/tissue_biased_males_ptgs_edger.tsv", quote = F, sep = "\t", col.names = T, row.names = F)
-write.table(male[["Lima-Voom table"]] %>% mutate(Name = rownames(male[["Lima-Voom table"]])), file = "results/differential_expression/stissue_biased_males_ptgs_lvoom.tsv", quote = F, sep = "\t", col.names = T, row.names = F)
+write.table(male[["Lima-Voom table"]] %>% mutate(Name = rownames(male[["Lima-Voom table"]])), file = "results/differential_expression/tissue_biased_males_ptgs_lvoom.tsv", quote = F, sep = "\t", col.names = T, row.names = F)
+
+rm(temp_bed)
 ```
 
 
@@ -449,7 +560,7 @@ kall = round(kall)
 
 # discard low counts (<0.5 RPM) entries for at least 2 samples
 keep = rowSums(cpm(kall)>0.5) >= 2	
-summary(keep) # 6459 will be removed 
+summary(keep) # 590 genes will be removed 
 kall = kall[keep,]
 rm(keep)
 
@@ -466,6 +577,41 @@ all(colnames(kall) %in% rownames(kall_info))
 all(colnames(kall) == rownames(kall_info))
 ```
 
+```{r pca sbge}
+# Read TPM data and transform
+tpm = read.table("rna-seq/kallisto/tpm.tsv", header = T)
+rownames(tpm) = tpm$target_id
+tpm = tpm[, -1]
+# transform data
+transposed = t(tpm)
+
+pca_exp = PCA(transposed, ncp = 20, graph = F)
+pcadf = data.frame(tissue = paste0(kall_info$sex, ", ", kall_info$organ), 
+                   pca1 = as.data.frame(pca_exp$ind)[,1],
+                   pca2 = as.data.frame(pca_exp$ind)[,2])
+
+ggplot(pcadf) +
+  geom_hline(yintercept = 0, color="gray40")+
+  geom_vline(xintercept = 0, color="gray40")+
+  geom_jitter(aes(pca1, pca2, fill=tissue), shape=21, size=8) +
+  labs(x="Component 1 (35.67%)", y= "Component 2 (13.39%)", fill= "Tissue") +
+  scale_fill_manual(values = c("#3ab98f", "#2ab1c6", "#ee4d80", "#b52ac6")) +
+  guides(fill = guide_legend(override.aes = list(size=8))) +
+  coord_fixed(ratio = 1.5) +
+  theme_bw(base_size = 20) +
+  theme(legend.position = c(0.25, 0.8),
+        legend.text = element_text(size = 10),
+        legend.title = element_text(size = 10),
+        legend.background = element_rect(fill = "gray"),
+        aspect.ratio=1)
+
+
+ggsave("results/pca_sbge.png", width = 8, height = 6, dpi = 600)
+
+rm(pcadf, pca_exp)
+```
+
+
 ### Differential Expression for sex-biased genes in Flowers
 
 ```{r flowers sbge}
@@ -477,7 +623,7 @@ fgroups = kall_info[kall_info$organ == "Flower bud", ]$sex
 
 flowers_genes = pyramide(fsbge, fsbge_info, ~sex, fgroups)
 
-fwrite(as.data.table(flowers_genes[["clusters"]]), "try1.txt")
+rm(fsbge, fsbge_info, fgroups)
 ```
 
 ### Differential Expression for sex-biased genes in Leaves
@@ -490,11 +636,13 @@ lsbge_info = kall_info %>% filter(organ=="Leaf")
 lgroups = kall_info[kall_info$organ == "Leaf", ]$sex
 
 leaves_genes = pyramide(lsbge, lsbge_info, ~sex, lgroups)
+
+rm(lsbge, lsbge_info, lgroups)
 ```
 
 ### Differential Expression for tissue-biased genes in Females
 
-```{r female ptgs}
+```{r female sbge}
 # Select female samples
 fet_sbge = kall %>% select(rownames(kall_info[kall_info$sex=="Female", ]))
 fet_sbge_info = kall_info %>% filter(sex=="Female")
@@ -502,11 +650,13 @@ fet_sbge_info = kall_info %>% filter(sex=="Female")
 fegroups = kall_info[kall_info$sex == "Female", ]$organ
 
 female_genes = pyramide(fet_sbge, fet_sbge_info, ~organ, fegroups)
+
+rm(fet_sbge, fet_sbge_info, fegroups)
 ```
 
 ### Differential Expression for tissue-biased genes in Males
 
-```{r female ptgs}
+```{r male sbge}
 # Select male samples
 mt_sbge = kall %>% select(rownames(kall_info[kall_info$sex=="Male", ]))
 mt_sbge_info = kall_info %>% filter(sex=="Male")
@@ -514,6 +664,8 @@ mt_sbge_info = kall_info %>% filter(sex=="Male")
 mgroups = kall_info[kall_info$sex == "Male", ]$organ
 
 male_genes = pyramide(mt_sbge, mt_sbge_info, ~organ, mgroups)
+
+rm(mt_sbge, mt_sbge_info, mgroups)
 ```
 
 ### Intersections and plot
@@ -524,15 +676,23 @@ sbge_list = list("Sex-biased in flower buds" = flowers_genes[["clusters"]],
                   "Tissue-biased in females" = female_genes[["clusters"]], 
                   "Tissue-biased in males" = male_genes[["clusters"]])
 
-upset(fromList(sbge_list))
+upset(fromList(sbge_list),
+      nintersects = 8,
+      mainbar.y.label = "Shared DE genes",
+      sets.x.label = "DE genes", 
+      matrix.color = met.brewer("Egypt")[2],
+      main.bar.color = met.brewer("Egypt")[3],
+      sets.bar.color = met.brewer("Egypt")[4],
+      shade.color = met.brewer("Egypt")[2],
+      point.size = 10,
+      line.size = 4,
+      text.scale = c(3, 4, 3, 4, 5, 4),
+      mb.ratio = c(0.6, 0.4))
+
+rm(sbge_list)
 ```
 
-```{r plot de sbge}
-# Read TPM data and transform
-tpm = read.table("rna-seq/kallisto/tpm.tsv", header = T)
-rownames(tpm) = tpm$target_id
-tpm = tpm[, -1]
-
+```{r plot of sbge}
 # Sex-biased in flowers
 baits_flowers = flowers_genes[["clusters"]]
 baits_flowers = as.data.frame(tpm[baits_flowers, ]) %>% select(grep('B', colnames(tpm))) 
@@ -573,47 +733,223 @@ ggplot(bait_df) +
   facet_grid(~type)
 
 ggsave("results/sbge.png", width = 8, height = 8, dpi = 600)
+
+rm(baits_leaves, baits_flowers, bait_df)
+```
+
+```{r save results sbge, eval=FALSE, include=FALSE}
+# Load BED file with +-400bp
+genes_bed = read.table("annotation/full_genes.bed")
+colnames(genes_bed) = c("Chrom", "Start", "End", "Name", "Score", "Strand")
+rownames(genes_bed) = genes_bed$Name
+genes_bed = merge(genes_bed, kall, by = "row.names", all.x = F)[, 2:7] # remove those that didn't pass the expression filter
+rownames(genes_bed) = genes_bed$Name
+
+# check all DE genes are in the annotation file
+all(flowers_genes[["clusters"]] %in% rownames(genes_bed))
+all(leaves_genes[["clusters"]] %in% rownames(genes_bed))
+all(female_genes[["clusters"]] %in% rownames(genes_bed)) # False, 
+all(male_genes[["clusters"]] %in% rownames(genes_bed))
+
+# Sex biased in Flowers
+temp_bed = genes_bed[flowers_genes[["clusters"]], ] %>% mutate("sex_biased_flowers_sbge")
+write.table(temp_bed, file = "results/differential_expression/sex_biased_flowers_sbge.bed", quote = F, sep = "\t", col.names = F, row.names = F)
+write.table(flowers_genes[["DeSeq2 table"]] %>% mutate(Name = rownames(flowers_genes[["DeSeq2 table"]])), file = "results/differential_expression/sex_biased_flowers_sbge_deseq.tsv", quote = F, sep = "\t", col.names = T, row.names = F)
+write.table(flowers_genes[["EdgeR table"]] %>% mutate(Name = rownames(flowers_genes[["EdgeR table"]])), file = "results/differential_expression/sex_biased_flowers_sbge_edger.tsv", quote = F, sep = "\t", col.names = T, row.names = F)
+write.table(flowers_genes[["Lima-Voom table"]] %>% mutate(Name = rownames(flowers_genes[["Lima-Voom table"]])), file = "results/differential_expression/sex_biased_flowers_sbge_lvoom.tsv", quote = F, sep = "\t", col.names = T, row.names = F)
+
+# Sex biased in Leaves
+temp_bed = genes_bed[leaves_genes[["clusters"]], ] %>% mutate("sex_biased_leaves_sbge")
+write.table(temp_bed, file = "results/differential_expression/sex_biased_leaves_sbge.bed", quote = F, sep = "\t", col.names = F, row.names = F)
+write.table(leaves_genes[["DeSeq2 table"]] %>% mutate(Name = rownames(leaves_genes[["DeSeq2 table"]])), file = "results/differential_expression/sex_biased_leaves_sbge_deseq.tsv", quote = F, sep = "\t", col.names = T, row.names = F)
+write.table(leaves_genes[["EdgeR table"]] %>% mutate(Name = rownames(leaves_genes[["EdgeR table"]])), file = "results/differential_expression/sex_biased_leaves_sbge_edger.tsv", quote = F, sep = "\t", col.names = T, row.names = F)
+write.table(leaves_genes[["Lima-Voom table"]] %>% mutate(Name = rownames(leaves_genes[["Lima-Voom table"]])), file = "results/differential_expression/sex_biased_leaves_sbge_lvoom.tsv", quote = F, sep = "\t", col.names = T, row.names = F)
+
+# Tissue biased in females
+temp_bed = genes_bed[female_genes[["clusters"]], ] %>% mutate("tissue_biased_females_sbge")
+write.table(temp_bed, file = "results/differential_expression/tissue_biased_females_sbge.bed", quote = F, sep = "\t", col.names = F, row.names = F)
+write.table(female_genes[["DeSeq2 table"]] %>% mutate(Name = rownames(female_genes[["DeSeq2 table"]])), file = "results/differential_expression/tissue_biased_females_sbge_deseq.tsv", quote = F, sep = "\t", col.names = T, row.names = F)
+write.table(female_genes[["EdgeR table"]] %>% mutate(Name = rownames(female_genes[["EdgeR table"]])), file = "results/differential_expression/tissue_biased_females_sbge_edger.tsv", quote = F, sep = "\t", col.names = T, row.names = F)
+write.table(female_genes[["Lima-Voom table"]] %>% mutate(Name = rownames(female_genes[["Lima-Voom table"]])), file = "results/differential_expression/tissue_biased_females_sbge_lvoom.tsv", quote = F, sep = "\t", col.names = T, row.names = F)
+
+# Tissue biased in males
+temp_bed = genes_bed[male_genes[["clusters"]], ] %>% mutate("tissue_biased_males_sbge")
+write.table(temp_bed, file = "results/differential_expression/tissue_biased_males_sbge.bed", quote = F, sep = "\t", col.names = F, row.names = F)
+write.table(male_genes[["DeSeq2 table"]] %>% mutate(Name = rownames(male_genes[["DeSeq2 table"]])), file = "results/differential_expression/tissue_biased_males_sbge_deseq.tsv", quote = F, sep = "\t", col.names = T, row.names = F)
+write.table(male_genes[["EdgeR table"]] %>% mutate(Name = rownames(male_genes[["EdgeR table"]])), file = "results/differential_expression/tissue_biased_males_sbge_edger.tsv", quote = F, sep = "\t", col.names = T, row.names = F)
+write.table(male_genes[["Lima-Voom table"]] %>% mutate(Name = rownames(male_genes[["Lima-Voom table"]])), file = "results/differential_expression/tissue_biased_males_sbge_lvoom.tsv", quote = F, sep = "\t", col.names = T, row.names = F)
+
+rm(temp_bed)
 ```
 
 
-```{r overlap}
+## 4.- Post-transcriptional Gene Silencing
+
+```{r overlap, eval=FALSE}
 # formatting of the data
-sRNA_clusters = as.data.table(anno_ptgs) # transform
+sRNA_clusters = as.data.table(read.table("raw/only_21-22_known_de_novo_f-y/Results.txt", header = T)) # transform to data table
 sRNA_clusters[, min := min(Start, End), by=1:nrow(sRNA_clusters)] # unstrand start 
 sRNA_clusters[, max := max(Start, End), by=1:nrow(sRNA_clusters)] # unstrand end
-# get gene annotations
-genesCoordinates = fread("annotation/ALLGenesFromVulgarisIntoLatifolia.txt")
-genesCoordinates[, ':='(query_sequence = NULL, flag = NULL, mapping_quality=NULL)] # remove columns
-genesCoordinates[, gene_name := strsplit(gene_name, '::')[[1]][1], by=1:nrow(genesCoordinates)] # keep simple gene IDs
-genesCoordinates[, min := min(start_pos, end_pos), by=1:nrow(genesCoordinates)]
-genesCoordinates[, max := max(start_pos, end_pos), by=1:nrow(genesCoordinates)]
-# Add 400bp upstream and downstream
-genesCoordinates[, min := min - 400, by=1:nrow(genesCoordinates)]
-genesCoordinates[, max := max + 400, by=1:nrow(genesCoordinates)]
 
-# select for DE
-sRNA_clusters = sRNA_clusters[Name %in% flowers[["clusters"]]] # Select DE sNRAs
-genesCoordinates = genesCoordinates[gene_name %in% flowers_genes[["clusters"]]] # select DE genes
+# get gene annotations, already including +-400 bp
+genesCoordinates = fread("annotation/full_genes.bed")
+colnames(genesCoordinates) = c("chr", "start", "end", "gene_name", "score", "strand")
+genesCoordinates[, min := min(start, end), by=1:nrow(genesCoordinates)]
+genesCoordinates[, max := max(start, end), by=1:nrow(genesCoordinates)]
+genesCoordinates = genesCoordinates[!duplicated(genesCoordinates$gene_name),] # remove duplicates
 
-# Initiate data.table containing the header for two columns: gene name and name of overlapping clusters
-header = list('gene_name', 'overlapping_cluster')
-fwrite(header, 'Overlapping_cluster_numbers.txt', append = FALSE, sep='\t')
+# select for sex-DE of genes/sRNAs in Flowers
+sRNA_clusters_bait = sRNA_clusters[Name %in% flowers[["clusters"]]] # Select DE sNRAs
+genesCoordinates_bait = genesCoordinates[gene_name %in% flowers_genes[["clusters"]]] # select DE genes
+
+# Initiate data.table containing the header
+header = list('gene_name', 'overlapping_cluster', 'comparison')
+fwrite(header, 'results/overlaps/overlapping_clusters_ptgs.txt', append = FALSE, sep='\t')
 
 # For each gene, get all overlapping siRNA clusters
-for (i in seq(1, nrow(genesCoordinates))) {
+for (i in seq(1, nrow(genesCoordinates_bait))) {
   # Current gene info
-  CurrentGene <- genesCoordinates$gene_name[i]
-  CurrentChr <- genesCoordinates$scaffold[i]
-  Currentmin <- genesCoordinates$min[i]
-  Currentmax <- genesCoordinates$max[i]
+  CurrentGene <- genesCoordinates_bait$gene_name[i]
+  CurrentChr <- genesCoordinates_bait$chr[i]
+  Currentmin <- genesCoordinates_bait$min[i]
+  Currentmax <- genesCoordinates_bait$max[i]
   # make a subset of the siRNA cluster data table for clusters overlapping the gene
   # overlap happens if cluster minimum is lower than gene maximum AND cluster maximum is higher than gene minimum
-  siRNAsubset <- sRNA_clusters[(Chrom == CurrentChr)&(min < Currentmax)&(max > Currentmin)]
+  siRNAsubset <- sRNA_clusters_bait[(Chrom == CurrentChr)&(min < Currentmax)&(max > Currentmin)]
   # write a line with output and append it to output data.table
 #  line <- list(CurrentGene, nrow(siRNAsubset))
-  line = as.data.frame(siRNAsubset$Name) %>% mutate(CurrentGene) %>% relocate(CurrentGene)
-  fwrite(line, 'Overlapping_cluster_numbers.txt', append = TRUE, sep='\t')
+  line = as.data.frame(siRNAsubset$Name) %>% mutate(CurrentGene, "sex_biased_in_flowers") %>% relocate(CurrentGene)
+  fwrite(line, 'results/overlaps/overlapping_clusters_ptgs.txt', append = TRUE, sep='\t')
+}
+###########################################################################################################################
+# select for sex-DE of genes/sRNAs in leaves
+sRNA_clusters_bait = sRNA_clusters[Name %in% leaves[["clusters"]]] # Select DE sNRAs
+genesCoordinates_bait = genesCoordinates[gene_name %in% leaves_genes[["clusters"]]] # select DE genes
+
+# For each gene, get all overlapping siRNA clusters
+for (i in seq(1, nrow(genesCoordinates_bait))) {
+  # Current gene info
+  CurrentGene <- genesCoordinates_bait$gene_name[i]
+  CurrentChr <- genesCoordinates_bait$chr[i]
+  Currentmin <- genesCoordinates_bait$min[i]
+  Currentmax <- genesCoordinates_bait$max[i]
+  # make a subset of the siRNA cluster data table for clusters overlapping the gene
+  # overlap happens if cluster minimum is lower than gene maximum AND cluster maximum is higher than gene minimum
+  siRNAsubset <- sRNA_clusters_bait[(Chrom == CurrentChr)&(min < Currentmax)&(max > Currentmin)]
+  # write a line with output and append it to output data.table
+#  line <- list(CurrentGene, nrow(siRNAsubset))
+  line = as.data.frame(siRNAsubset$Name) %>% mutate(CurrentGene, "sex_biased_in_leaves") %>% relocate(CurrentGene)
+  fwrite(line, 'results/overlaps/overlapping_clusters_ptgs.txt', append = TRUE, sep='\t')
 }
 
 ```
+
+```{r exploration}
+# transform and add info to sRNA quantification
+transposed = transpose(matrix_ptgs)
+colnames(transposed) = rownames(matrix_ptgs)
+rownames(transposed) = colnames(matrix_ptgs)
+transposed = cpm(transposed, log = T) # transform to logRPM
+# add samples as column
+transposed = as.data.frame(transposed) %>% mutate(sample = rownames(transposed)) %>% relocate(sample) 
+datainfo_s = datainfo %>% mutate(sample = rownames(datainfo)) %>% relocate(sample) 
+# combine 
+fermented_srna = right_join(datainfo_s, transposed, by = "sample")
+
+# transform and add info to gene quant
+fermented_genes = transpose(tpm)
+colnames(fermented_genes) = rownames(tpm)
+rownames(fermented_genes) = colnames(tpm)
+fermented_genes = as.data.frame(fermented_genes) %>% mutate(sample = rownames(fermented_genes)) %>% relocate(sample) 
+datainfo_s = kall_info %>% mutate(sample = rownames(kall_info)) %>% relocate(sample) 
+fermented_genes = right_join(datainfo_s, fermented_genes, by = "sample")
+
+
+# Get overlapping clusters
+over_flowers = read_table("results/overlaps/overlapping_clusters_ptgs.txt")
+over_flowers = filter(over_flowers, gene_name=="Silat_chr12_Gene.3592")
+# experiment 1, plot 
+fermented_gene_bait = subset(fermented_genes, select = c("sample", "sex", "organ", levels(as.factor(over_flowers$gene_name)))) %>% mutate(element = "gene")
+fermented_gene_bait = melt(fermented_gene_bait, id.vars = c("sample", "sex", "organ", "element"), variable.name = "name", value.name = "expression")
+fermented_srna_bait = subset(fermented_srna, select = c("sample", "sex", "organ", levels(as.factor(over_flowers$overlapping_cluster)))) %>% mutate(element = "srna")
+fermented_srna_bait = melt(fermented_srna_bait, id.vars = c("sample", "sex", "organ", "element"), variable.name = "name", value.name = "expression")
+
+dough = rbind(fermented_gene_bait, fermented_srna_bait)
+
+dough %>% group_by(name, sex, organ) %>% summarise(mean = mean(expression), sex, name, element, organ) %>% unique() %>%
+ggplot(aes(x=sex)) +
+  facet_wrap(~organ, nrow = 1) +
+  geom_point(aes(y= mean, color = name), size=4) +
+  geom_line(aes(y= mean, group = name, color=name), size=2) +
+  scale_color_manual(values = met.brewer("Egypt")) +
+  labs(x=NULL, y="Mean Expression", color=NULL) +
+  theme(legend.position = "top",
+        text = element_text(size = 20),
+        panel.border = element_rect(color = "black", fill=NA),
+        aspect.ratio=1) 
+
+ggsave("results/bait_exploration.png", width = 8, height = 8, dpi = 600)
+```
+
+```{r chi square}
+# sex-biased PTGS interaction
+chi_flower = matrix(c(c(10, 758),
+                      c(32, 1764)),
+                    nrow = 2, byrow = T)
+colnames(chi_flower) = c("number of overlaps to sex-biased clusters", "number of overlaps to unbiased clusters")
+rownames(chi_flower) = c("sex-biased genes", "unbiased genes")
+
+chi_leaves = matrix(c(c(3, 38),
+                      c(27, 2220)),
+                    nrow = 2, byrow = T)
+colnames(chi_leaves) = c("number of overlaps to sex-biased clusters", "number of overlaps to unbiased clusters")
+rownames(chi_leaves) = c("sex-biased genes", "unbiased genes")
+
+# Perform chi-square test
+chisq.test(chi_flower) #the observed values don't significantly differ from the expected values
+
+
+chisq.test(chi_leaves) #the observed values significantly differ from the expected values
+
+rm(chi_flower, chi_leaves)
+```
+
+
+## 5.- Gene Co-expression network
+
+```{r coexpmat, eval=FALSE}
+# get the union of DE genes (union worka in pairs)
+de_genes = union(union(flowers_genes[["clusters"]], leaves_genes[["clusters"]]), union(female_genes[["clusters"]], male_genes[["clusters"]]))
+de_genes = as.matrix(kall[de_genes, ])
+
+weight_mat = GENIE3(de_genes, nCores=16, verbose=TRUE)
+dim(weight_mat)
+link_list = getLinkList(weight_mat, threshold=0.005)
+
+my_network = graph_from_data_frame(link_list,  directed = F)
+modules = cluster_leiden(my_network, resolution_parameter = 0.001, objective_function = "modularity")
+
+ggraph(my_network, layout = "kk", circular = F) +
+  geom_edge_diagonal(color = "grey70", width = 0.5, alpha = 0.5) +
+  geom_node_point(alpha = 0.8, color = "black", shape = 21, size = 2) 
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
