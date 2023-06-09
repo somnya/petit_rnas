@@ -2003,8 +2003,8 @@ ggplot(exp_all) +
 
 ggsave("results/rddm_vs_sbge_sex.png", width = 10, height = 6, dpi = 600)
 
-
-rm(exp_all)
+summary(lm(log(ptgs+1) ~ log(rddm+1), data = exp_all) )
+#rm(exp_all)
 ```
 
 ## 7.- Population-level diversity
@@ -2012,6 +2012,7 @@ rm(exp_all)
 ```{r pi calc}
 # Flowers
 # none of them are in the Y chr
+# 197 genes
 pi_flo = drop_na(read.table("popgen/pi_flower_sbg_pi.txt", header = T) )[, 2:5]
 colnames(pi_flo) = c("chr", "start", "end", "pi")
 
@@ -2051,6 +2052,7 @@ var.test(x=filter(pi_flo, bias=="male-biased")$pi, y=pi_unbiased$pi)
 var.test(x=filter(pi_flo, bias=="female-biased")$pi, y=pi_unbiased$pi)
 # there is A significant difference between the variances (p=0.4 for males and 0.002 for females)
 
+# sample randomly
 wilcox.test(x=filter(pi_flo, bias=="male-biased")$pi, y=pi_unbiased$pi, var.equal = F)
 wilcox.test(x=filter(pi_flo, bias=="female-biased")$pi, y=pi_unbiased$pi, var.equal = F)
 # p values not significant (males p=0.23, females p=0.09)
@@ -2080,9 +2082,42 @@ bias_leaves = read.table("results/differential_expression/sex_biased_leaves_sbge
 colnames(bias_leaves) = c("chr", "start", "end", "gene", "bias")
 pi_le = left_join(pi_le, bias_leaves, by=c("chr", "start", "end"))
 
-rm(pi_flo, pi_le, pi_unbiased, bias_flowers, bias_leaves)
+rm(pi_le, pi_unbiased, bias_flowers, bias_leaves)
 ```
 
+
+```{r correlation rddm and diversity}
+exp_all = left_join(exp_all, pi_flo[,c("gene", "pi")], by="gene")
+
+exp_all %>% select(gene, pi) %>% filter(pi != 0) %>% unique # check if all genes with pi are there
+
+summary(glm(pi ~ log2(rddm), data = exp_all) ) # normal already
+summary(glm(pi ~ log2(rddm), data = filter(exp_all, sex=="Female", bias=="female-biased", pi!=0)) )
+
+filter(exp_all, pi!=0) %>% ggplot() + 
+  geom_point(aes(x=log2(ptgs), y=pi), alpha=0.2, color=met.brewer("Egypt")[2]) + 
+  geom_smooth(aes(x=log2(ptgs), y=pi), method = "glm", color=met.brewer("Egypt")[1]) + 
+  labs(x="24-nt sRNA log2RPM", y="Nucleotide diversity (π)") +
+  facet_grid(sex ~ bias, scales = "fixed") +
+  theme_bw() +
+  theme(legend.position = "none",
+        text = element_text(size = 20),
+        panel.border = element_rect(color = "black", fill=NA),
+        aspect.ratio=1) 
+
+filter(exp_all, pi!=0) %>% ggplot() + 
+  geom_point(aes(x=log2(rddm), y=pi), alpha=0.2, color=met.brewer("Egypt")[2]) + 
+  geom_smooth(aes(x=log2(rddm), y=pi), method = "glm", color=met.brewer("Egypt")[1]) + 
+  labs(x="24-nt sRNA log2RPM", y="Nucleotide diversity (π)") +
+  facet_grid(sex ~ bias, scales = "fixed") +
+  theme_bw() +
+  theme(legend.position = "none",
+        text = element_text(size = 20),
+        panel.border = element_rect(color = "black", fill=NA),
+        aspect.ratio=1) 
+  
+  
+```
 
 
 
