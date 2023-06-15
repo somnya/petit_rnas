@@ -144,6 +144,12 @@ fracs = cbind(data.frame(
 ) , fracs)
 fracs = fracs %>% select(sample, sex, organ, read_length, count)
 
+# stats
+(sum(filter(fracs, read_length == 24)$count )/36) / (sum(fracs$count)/36)
+(sum(filter(fracs, read_length == 24, organ=="Leaf")$count )/18) / (sum(filter(fracs, organ=="Leaf")$count)/18)
+(sum(filter(fracs, read_length == 24, organ=="Flower bud")$count )/18) / (sum(filter(fracs, organ=="Flower bud")$count)/18)
+
+# plot
 ggplot(fracs) + 
   geom_bar(aes(fill=read_length, y=count, x=sample), position="fill", stat="identity") +
   facet_grid(organ ~ sex) +
@@ -166,7 +172,7 @@ chr_sizes = chr_sizes %>% mutate(start = "1") %>% relocate(start, .before = end)
 ptgs_bed = read.table("raw/only_21-22_known_de_novo_f-y/Results.gff3")[, c(1, 4:5)]
 colnames(ptgs_bed) = c("chr", "start", "end")
 
-# get density of PTGS clusters
+# get density of RdDM clusters
 rddm_bed = read.table("raw/only_24_f-y/Results.gff3")[, c(1, 4:5)]
 colnames(rddm_bed) = c("chr", "start", "end")
 
@@ -255,7 +261,7 @@ dev.off()
 }
 
 # Distribution of inverted repeats
-inv_bed = read.table("results/inv_rep.bed"
+inv_bed = read.table("results/inv_rep.bed")
                      
 {
 png(file="results/inv_rep.png", width=2000, height=2000)
@@ -268,6 +274,57 @@ circos.genomicDensity(inv_bed, col = c("blue"), track.height = 0.1, count_by = "
 circos.clear()
 dev.off()
 }
+```
+
+```{r distribution of clusters / mapping}
+# are there more clusters in the sex chr?
+# ptgs
+ptgs_bed$chr = replace(ptgs_bed$chr, grep("scaffold", ptgs_bed$chr), "chr_Y")
+rddm_bed$chr = replace(rddm_bed$chr, grep("scaffold", rddm_bed$chr), "chr_Y")
+
+# normalize by chr size
+chr_sizes$chr = replace(chr_sizes$chr, grep("scaffold", chr_sizes$chr), "chr_Y")
+chr_sizes = rbind(
+chr_sizes[1:12,],
+data.frame(chr="chr_Y", start=1, end = sum(filter(chr_sizes, chr=="chr_Y")$end) )
+)
+
+dens = rbind(as.data.frame(table(ptgs_bed$chr)) %>% mutate(ty = "ptgs"),
+            as.data.frame(table(ptgs_bed$chr)) %>% mutate(ty = "rddm")
+            )
+colnames(dens) = c("chr", "freq", "type")
+
+# number of clusters per mb
+dens = dens %>% left_join(chr_sizes, by="chr") %>% mutate(norm = (freq/end)*1000000)
+
+hist(dens$freq)
+shapiro.test(dens$freq) # normally distributed (almost not)
+kruskal.test(norm ~ chr, data = dens) # pval = 0.01; significant = significant differences
+
+
+# do sex chr differ in mapping?
+
+wgmap = rbind(
+females_depth_ptgs %>% mutate(sex = "females", type = "ptgs"),
+females_depth_rddm %>% mutate(sex = "females", type = "rddm"),
+males_depth_ptgs %>% mutate(sex = "males", type = "ptgs"),
+males_depth_rddm %>% mutate(sex = "males", type = "rddm")
+)
+
+wgmap = wgmap[, c("chr_w", "mean_depth", "sex", "type")]
+
+hist(wgmap$mean_depth)
+shapiro.test(log(sample(wgmap$mean_depth, 5000))) # not normal
+
+kruskal.test(mean_depth ~ chr_w, data = wgmap) # pval = 2.2e-16, significant differences between chr
+summary(glm(mean_depth ~ chr_w, data = wgmap)) # chr3, chr11, X and Y may have differences
+shapiro.test(sample(residuals(glm(mean_depth ~ chr_w, data = wgmap)), 5000)) # residuals not normal, biased
+
+summary(glm(mean_depth ~ sex * type, data = wgmap)) # not significan effect of sex or sRNA lenght overall
+
+library(lme4)
+
+summary(lmer(mean_depth ~ sex * type + (1 | chr_w), data = wgmap))
 ```
 
 
@@ -1853,6 +1910,65 @@ exp_flowers = left_join(exp_flowers, flo_ptgs, by=c("gene", "sex", "tissue")) %>
 rm(flo_ptgs, flo_rddm)
 
 
+# UNBIASED GENES IN FLOWERS **************************************
+
+# get annotaion and full list of genes
+unbiased_flowers = as.data.frame(read.table("results/differential_expression/unbiased_genes_flowers.bed")$V4) %>% mutate("unbiased") 
+colnames(unbiased_flowers) = c("gene", "bias")
+
+
+#### 21/22 - PTGS 
+
+# Females
+flo_ptgs_fe = fread("results/gene-level/flowers_depth_females_unbiased.tsv")
+flo_ptgs_fe = surco_gene(flo_ptgs_fe, 54935002, 29689313, 25245689)
+flo_ptgs_fe = rbind(
+flo_ptgs_fe = flo_ptgs_fe %>% select(gene, mean_depth),
+data.frame(gene = setdiff(unbiased_flowers$gene, flo_ptgs_fe$gene), mean_depth = 0)
+) %>% mutate(sex = "Female", tissue = "Flower bud")
+
+# Males
+flo_ptgs_ma = fread("results/gene-level/flowers_depth_males_unbiased.tsv")
+flo_ptgs_ma = surco_gene(flo_ptgs_ma, 13224600, 23943681, 23582102)
+flo_ptgs_ma = rbind(
+flo_ptgs_ma = flo_ptgs_ma %>% select(gene, mean_depth),
+data.frame(gene = setdiff(unbiased_flowers$gene, flo_ptgs_ma$gene), mean_depth = 0)
+) %>% mutate(sex = "Male", tissue = "Flower bud")
+
+# concatenate
+flo_ptgs = rbind(flo_ptgs_fe, flo_ptgs_ma) %>% rename(mean_depth = "ptgs")
+rm(flo_ptgs_fe, flo_ptgs_ma) 
+
+#### 24 - RdDM
+
+# Females
+flo_rddm_fe = fread("results/rddm/flowers_depth_females_unbiased.tsv")
+flo_rddm_fe = surco_gene(flo_rddm_fe, 54935002, 29689313, 25245689)
+flo_rddm_fe = rbind(
+flo_rddm_fe = flo_rddm_fe %>% select(gene, mean_depth),
+data.frame(gene = setdiff(unbiased_flowers$gene, flo_rddm_fe$gene), mean_depth = 0)
+) %>% mutate(sex = "Female", tissue = "Flower bud")
+
+# Males
+flo_rddm_ma = fread("results/rddm/flowers_depth_males_unbiased.tsv")
+flo_rddm_ma = surco_gene(flo_rddm_ma, 13224600, 23943681, 23582102)
+flo_rddm_ma = rbind(
+flo_rddm_ma = flo_rddm_ma %>% select(gene, mean_depth),
+data.frame(gene = setdiff(unbiased_flowers$gene, flo_rddm_ma$gene), mean_depth = 0)
+) %>% mutate(sex = "Male", tissue = "Flower bud")
+
+# concatenate
+flo_rddm = rbind(flo_rddm_fe, flo_rddm_ma) %>% rename(mean_depth = "rddm")
+rm(flo_rddm_fe, flo_rddm_ma) 
+
+# combine data for unbiased genes, set gene expression to 0, it won't be important
+
+exp_flowers = rbind(
+  exp_flowers,
+  left_join(flo_ptgs, flo_rddm, by=c("gene", "sex", "tissue")) %>% mutate(comparison = "Sex-biased in flowers", mean_exp = 0, bias = "unbiased")
+)
+
+rm(flo_ptgs, flo_rddm, unbiased_flowers)
 
 
 
@@ -1917,6 +2033,75 @@ exp_leaves = left_join(exp_leaves, le_ptgs, by=c("gene", "sex", "tissue")) %>% l
 rm(le_ptgs, le_rddm)
 
 
+# UNBIASED GENES IN LEAVES **********************************************
+
+# get annotaion and full list of genes
+unbiased_leaves = as.data.frame(read.table("results/differential_expression/unbiased_genes_leaves.bed")$V4) %>% mutate("unbiased") 
+colnames(unbiased_leaves) = c("gene", "bias")
+
+#### 21/22 - PTGS 
+
+# Females
+le_ptgs_fe = fread("results/gene-level/leaves_depth_females_unbiased.tsv")
+le_ptgs_fe = surco_gene(le_ptgs_fe, 24695806, 31425418, 21443081)
+le_ptgs_fe = rbind(
+le_ptgs_fe = le_ptgs_fe %>% select(gene, mean_depth),
+data.frame(gene = setdiff(unbiased_leaves$gene, le_ptgs_fe$gene), mean_depth = 0)
+) %>% mutate(sex = "Female", tissue = "Leaf")
+
+# Males
+le_ptgs_ma = fread("results/gene-level/leaves_depth_males_unbiased.tsv")
+le_ptgs_ma = surco_gene(le_ptgs_ma, 20502566, 17763390, 26371650)
+le_ptgs_ma = rbind(
+le_ptgs_ma = le_ptgs_ma %>% select(gene, mean_depth),
+data.frame(gene = setdiff(unbiased_leaves$gene, le_ptgs_ma$gene), mean_depth = 0)
+) %>% mutate(sex = "Male", tissue = "Leaf")
+
+# concatenate
+le_ptgs = rbind(le_ptgs_fe, le_ptgs_ma) %>% rename(mean_depth = "ptgs")
+rm(le_ptgs_fe, le_ptgs_ma) 
+
+#### 24 - RdDM 
+
+# Females
+le_rddm_fe = fread("results/rddm/leaves_depth_females_unbiased.tsv")
+le_rddm_fe = surco_gene(le_rddm_fe, 24695806, 31425418, 21443081)
+le_rddm_fe = rbind(
+le_rddm_fe = le_rddm_fe %>% select(gene, mean_depth),
+data.frame(gene = setdiff(unbiased_leaves$gene, le_rddm_fe$gene), mean_depth = 0)
+) %>% mutate(sex = "Female", tissue = "Leaf")
+
+# Males
+le_rddm_ma = fread("results/gene-level/leaves_depth_males_unbiased.tsv")
+le_rddm_ma = surco_gene(le_rddm_ma, 20502566, 17763390, 26371650)
+le_rddm_ma = rbind(
+le_rddm_ma = le_rddm_ma %>% select(gene, mean_depth),
+data.frame(gene = setdiff(unbiased_leaves$gene, le_rddm_ma$gene), mean_depth = 0)
+) %>% mutate(sex = "Male", tissue = "Leaf")
+
+# concatenate
+le_rddm = rbind(le_rddm_fe, le_rddm_ma) %>% rename(mean_depth = "rddm")
+rm(le_rddm_fe, le_rddm_ma) 
+
+# combine data for unbiased genes, set gene expression to 0, it won't be important
+
+exp_leaves = rbind(
+  exp_leaves,
+  left_join(le_ptgs, le_rddm, by=c("gene", "sex", "tissue")) %>% mutate(comparison = "Sex-biased in leaves", mean_exp = 0, bias = "unbiased")
+)
+
+rm(le_ptgs, le_rddm, unbiased_leaves)
+
+
+
+
+
+
+
+
+
+
+
 
 
 ########################
@@ -1929,12 +2114,14 @@ rm(exp_flowers, exp_leaves)
 write.table(exp_all, file = "results/sbge_ptgs_rddm.tsv", quote = F, col.names = T, row.names = F, sep = "\t")
 
 
-
+summary(lm(log(ptgs+1) ~ log(rddm+1), data = exp_all) ) # R=.18, p=2.2e-16
+shapiro.test(sample(residuals(lm(log(ptgs+1) ~ log(rddm+1), data = exp_all)), 5000)) # not normal residuals
 
 # plot correlation ptgs vs rddm
 ggplot(exp_all) +
-  geom_jitter(aes(log2(ptgs), log2(rddm)), color="black", size=1) +
-  labs(x= "21/22-nt sRNA log2RPM", y="24-nt sRNA log2RPM") +
+  geom_jitter(aes(log(ptgs+1), log(rddm+1)), color="black", size=1, alpha=0.2) +
+  geom_smooth(aes(log(ptgs+1), log(rddm+1)), mathod="lm", color="orange", size=1, alpha=0.2) +
+  labs(x= "21/22-nt sRNA logRPM+1", y="24-nt sRNA logRPM+1") +
   theme_bw() +
   theme(legend.position = "none",
         text = element_text(size = 20),
@@ -1943,9 +2130,10 @@ ggplot(exp_all) +
 
 ggsave("results/ptgs_vs_rddm.png", width = 6, height = 4, dpi = 600)
 
+
 # plot correlation ptgs vs sbge
 ggplot(exp_all) +
-  geom_jitter(aes(log2(mean_exp), log2(ptgs)), color="black", size=1) +
+  geom_jitter(aes(log2(mean_exp), log2(ptgs)), color="black", size=1, alpha=0.2) +
   facet_wrap(~comparison, ncol = 2, scales = "free_x") +
   labs(x= "mRNA log2TPM", y="21/22-nt sRNA log2RPM") +
   theme_bw() +
@@ -1959,7 +2147,7 @@ ggsave("results/ptgs_vs_sbge.png", width = 8, height = 4, dpi = 600)
 
 # plot correlation rddm vs sbge
 ggplot(exp_all) +
-  geom_jitter(aes(log2(mean_exp), log2(rddm)), color="black", size=1) +
+  geom_jitter(aes(log2(mean_exp), log2(rddm)), color="black", size=1, alpha=0.2) +
   facet_wrap(~comparison, ncol = 2, scales = "free_x") +
   labs(x= "mRNA log2TPM", y="24-nt sRNA log2RPM") +
   theme_bw() +
@@ -1983,9 +2171,10 @@ ggplot(exp_all) +
   theme(legend.position = "top",
         text = element_text(size = 20),
         panel.border = element_rect(color = "black", fill=NA),
+        axis.text.x = element_text(size=15, angle = 45, hjust = 1),
         aspect.ratio=1) 
 
-ggsave("results/ptgs_vs_sbge_sex.png", width = 10, height = 6, dpi = 600)
+ggsave("results/ptgs_vs_sbge_sex.png", width = 12, height = 6, dpi = 600)
 
 # Plot comparison Female vs Male sRNA mapping RdDM
 
@@ -1999,13 +2188,82 @@ ggplot(exp_all) +
   theme(legend.position = "top",
         text = element_text(size = 20),
         panel.border = element_rect(color = "black", fill=NA),
+        axis.text.x = element_text(size=15, angle = 45, hjust = 1),
         aspect.ratio=1) 
 
-ggsave("results/rddm_vs_sbge_sex.png", width = 10, height = 6, dpi = 600)
+ggsave("results/rddm_vs_sbge_sex.png", width = 12, height = 6, dpi = 600)
 
-summary(lm(log(ptgs+1) ~ log(rddm+1), data = exp_all) )
+
 #rm(exp_all)
 ```
+
+```{r wilcoxon tests}
+#PTGS
+
+# In flowers
+temp = filter(exp_all, comparison=="Sex-biased in flowers")
+wilcox.test(ptgs ~ sex, data = filter(temp, bias=="female-biased"), paired=T, exact=T) # significant, pval=2.559e-08
+wilcox.test(ptgs ~ sex, data = filter(temp, bias=="male-biased"), paired=T, exact=T) # significant, pval=1.216e-07
+wilcox.test(ptgs ~ sex, data = filter(temp, bias=="unbiased"), paired=T, exact=T) # significant, pval=1.581e-09
+#------------ one tail -- is more in males?
+wilcox.test(ptgs ~ sex, data = filter(temp, bias=="female-biased"), paired=T, exact=T, alternative="less") # non-significant, pval=1, NO
+wilcox.test(ptgs ~ sex, data = filter(temp, bias=="male-biased"), paired=T, exact=T, alternative="less") # non-significant, pval=1, NO
+wilcox.test(ptgs ~ sex, data = filter(temp, bias=="unbiased"), paired=T, exact=T, alternative="less") # non-significant, pval=1, NO
+
+# In leaves
+temp = filter(exp_all, comparison=="Sex-biased in leaves")
+wilcox.test(ptgs ~ sex, data = filter(temp, bias=="female-biased"), paired=T, exact=T) # significant, pval=1.688e-06
+wilcox.test(ptgs ~ sex, data = filter(temp, bias=="male-biased"), paired=T, exact=T) # significant, pval=6.861e-06
+wilcox.test(ptgs ~ sex, data = filter(temp, bias=="unbiased"), paired=T, exact=T) # significant, pval=< 2.2e-16
+#------------ one tail -- is more in males?
+wilcox.test(ptgs ~ sex, data = filter(temp, bias=="female-biased"), paired=T, exact=T, alternative="less") # significant, pval=8.438e-07, YES
+wilcox.test(ptgs ~ sex, data = filter(temp, bias=="male-biased"), paired=T, exact=T, alternative="less") # significant, pval=3.43e-06, YES
+wilcox.test(ptgs ~ sex, data = filter(temp, bias=="unbiased"), paired=T, exact=T, alternative="less") # significant, pval=< 2.2e-16, YES
+
+
+
+# RdDM
+
+# In flowers
+temp = filter(exp_all, comparison=="Sex-biased in flowers")
+wilcox.test(rddm ~ sex, data = filter(temp, bias=="female-biased"), paired=T, exact=T) # significant, pval=< 2.2e-16
+wilcox.test(rddm ~ sex, data = filter(temp, bias=="male-biased"), paired=T, exact=T) # significant, pval=< 2.2e-16
+wilcox.test(rddm ~ sex, data = filter(temp, bias=="unbiased"), paired=T, exact=T) # significant, pval=< 2.2e-16
+#------------ one tail -- is more in females?
+wilcox.test(rddm ~ sex, data = filter(temp, bias=="female-biased"), paired=T, exact=T, alternative="greater") # significant, pval=< 2.2e-16, YES
+wilcox.test(rddm ~ sex, data = filter(temp, bias=="male-biased"), paired=T, exact=T, alternative="greater") # significant, pval=< 2.2e-16, YES
+wilcox.test(rddm ~ sex, data = filter(temp, bias=="unbiased"), paired=T, exact=T, alternative="greater") # significant, pval=< 2.2e-16, YES
+
+
+# In leaves
+temp = filter(exp_all, comparison=="Sex-biased in leaves")
+wilcox.test(rddm ~ sex, data = filter(temp, bias=="female-biased"), paired=T, exact=T) # significant, pval= 2.2e-16
+wilcox.test(rddm ~ sex, data = filter(temp, bias=="male-biased"), paired=T, exact=T) # NON-significant, pval= 0.4651 -- NO DIFFERENCE
+wilcox.test(rddm ~ sex, data = filter(temp, bias=="unbiased"), paired=T, exact=T) # significant, pval< 2.2e-16
+#------------ one tail -- is more in females?
+wilcox.test(rddm ~ sex, data = filter(temp, bias=="female-biased"), paired=T, exact=T, alternative="greater") # non-significant, pval< 2.2e-16, YES
+wilcox.test(rddm ~ sex, data = filter(temp, bias=="male-biased"), paired=T, exact=T, alternative="greater") # significant, pval= 0.2325, NO
+wilcox.test(rddm ~ sex, data = filter(temp, bias=="unbiased"), paired=T, exact=T, alternative="greater") # significant, pval< 2.2e-16, YES
+
+
+
+library(lme4)
+library(DHARMa)
+library(glmmTMB)
+# glmm?
+summary(lmer(log(rddm+1) ~ sex + (1|gene), data = filter(temp, bias=="unbiased")))
+shapiro.test(residuals(lmer(log(rddm+1) ~ sex + (1|gene), data = filter(temp, bias=="female-biased")))) # not normal residuals, not useful
+
+plot(simulateResiduals(lmer(ptgs ~ sex * bias + (1|gene), data = temp)))
+plot(simulateResiduals(lmer(rddm ~ sex * bias + (1|gene), data = temp)))
+plot(simulateResiduals(lmer(ptgs ~ sex * bias + (1|gene) + (1|tissue), data = exp_all)))
+plot(simulateResiduals(lmer(rddm ~ sex * bias + (1|gene) + (1|tissue), data = exp_all)))
+
+plot(simulateResiduals(glmmTMB(log2(ptgs+1) ~ sex * bias + (1|gene), data = temp)))
+plot(simulateResiduals(glmmTMB(round(rddm) ~ sex * bias + (1|gene) + (1|tissue), dispformula =~ 1, family=nbinom1, data = exp_all)))
+rm(temp)
+```
+
 
 ## 7.- Population-level diversity
 
@@ -2097,13 +2355,15 @@ summary(glm(pi ~ log2(rddm), data = filter(exp_all, sex=="Female", bias=="female
 filter(exp_all, pi!=0) %>% ggplot() + 
   geom_point(aes(x=log2(ptgs), y=pi), alpha=0.2, color=met.brewer("Egypt")[2]) + 
   geom_smooth(aes(x=log2(ptgs), y=pi), method = "glm", color=met.brewer("Egypt")[1]) + 
-  labs(x="24-nt sRNA log2RPM", y="Nucleotide diversity (π)") +
+  labs(x="21/22-nt sRNA log2RPM", y="Nucleotide diversity (π)") +
   facet_grid(sex ~ bias, scales = "fixed") +
   theme_bw() +
   theme(legend.position = "none",
         text = element_text(size = 20),
         panel.border = element_rect(color = "black", fill=NA),
         aspect.ratio=1) 
+
+ggsave("results/pi_vs_ptgs.png", width = 8, height = 8, dpi = 600)
 
 filter(exp_all, pi!=0) %>% ggplot() + 
   geom_point(aes(x=log2(rddm), y=pi), alpha=0.2, color=met.brewer("Egypt")[2]) + 
@@ -2116,9 +2376,13 @@ filter(exp_all, pi!=0) %>% ggplot() +
         panel.border = element_rect(color = "black", fill=NA),
         aspect.ratio=1) 
   
-  
+ggsave("results/pi_vs_rddm.png", width = 8, height = 8, dpi = 600)
+
 ```
 
+```{r}
+sessionInfo()
+```
 
 
 
