@@ -84,6 +84,14 @@ colnames(spp) = c("sRNA", "counts", "sample", "sex", "tissue")
 
 spp = spp %>% mutate(log_counts = log2(counts))
 
+freqs = data.frame(
+  table(spp$counts)
+)
+
+# proportion of low-freq species
+
+sum(freqs[as.numeric(freqs$Var1) < 10, ]$Freq) / sum(freqs$Freq)
+
 #### Histogram 
 
 ggplot(spp) +
@@ -2250,6 +2258,11 @@ wilcox.test(rddm ~ sex, data = filter(temp, bias=="unbiased"), paired=T, exact=T
 library(lme4)
 library(DHARMa)
 library(glmmTMB)
+library(fitdistrplus)
+# distribution of sRNA mapping
+descdist(exp_all$ptgs, discrete = FALSE) # beta, close to gamma
+descdist(exp_all$rddm, discrete = FALSE) # beta, farther to gamma
+
 # glmm?
 summary(lmer(log(rddm+1) ~ sex + (1|gene), data = filter(temp, bias=="unbiased")))
 shapiro.test(residuals(lmer(log(rddm+1) ~ sex + (1|gene), data = filter(temp, bias=="female-biased")))) # not normal residuals, not useful
@@ -2259,8 +2272,8 @@ plot(simulateResiduals(lmer(rddm ~ sex * bias + (1|gene), data = temp)))
 plot(simulateResiduals(lmer(ptgs ~ sex * bias + (1|gene) + (1|tissue), data = exp_all)))
 plot(simulateResiduals(lmer(rddm ~ sex * bias + (1|gene) + (1|tissue), data = exp_all)))
 
-plot(simulateResiduals(glmmTMB(log2(ptgs+1) ~ sex * bias + (1|gene), data = temp)))
-plot(simulateResiduals(glmmTMB(round(rddm) ~ sex * bias + (1|gene) + (1|tissue), dispformula =~ 1, family=nbinom1, data = exp_all)))
+plot(simulateResiduals(glmmTMB(ptgs ~ sex * bias + (1|gene),  dispformula =~ 1, family=beta, data = temp)))
+plot(simulateResiduals(glmmTMB(round(rddm) ~ sex * bias + (1|gene) + (1|tissue), dispformula =~ 1, family=beta, data = exp_all)))
 rm(temp)
 ```
 
