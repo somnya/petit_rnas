@@ -1,7 +1,6 @@
 # The contribution of small RNAs to the evolution of separate sexes and sex chromosomes in the plant _Silene latifolia_
 
 #### This repository contains all the necessary code for the paper published in the Journal of Evolutionary Biology
-[!doi](https://www.doi.org/)
 #### Eddy Mendoza-Galindo, Aline Muyle, CEFE Montpellier
 
 Correspondence: aline.muyle[at]cefe.cnrs.fr
